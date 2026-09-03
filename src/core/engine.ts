@@ -27,11 +27,15 @@ export class UpdaterEngine {
     allUpdates: UpdateItem[];
     unavailableManagers: PackageManager[];
   }> {
-    // 1. Detect availability in parallel
+    // 1. Detect availability in parallel with error isolation
     const availabilityChecks = await Promise.all(
       this.managers.map(async (manager) => {
-        const available = await manager.isAvailable();
-        return { manager, available };
+        try {
+          const available = await manager.isAvailable();
+          return { manager, available };
+        } catch {
+          return { manager, available: false };
+        }
       })
     );
 
@@ -43,8 +47,8 @@ export class UpdaterEngine {
       .filter((c) => !c.available)
       .map((c) => c.manager);
 
-    // 2. Query outdated packages concurrently for available managers
-    const checkPromises = availableManagers.map(async (manager) => {
+    // 2. Query outdated packages with a concurrency limit of 4
+    const checkTask = async (manager: PackageManager): Promise<CheckResult> => {
       callbacks?.onManagerStart?.(manager);
       try {
         const res = await manager.checkUpdates({ timeoutMs });
@@ -64,9 +68,19 @@ export class UpdaterEngine {
         callbacks?.onManagerComplete?.(manager, fallbackRes);
         return fallbackRes;
       }
-    });
+    };
 
-    const checkResults = await Promise.all(checkPromises);
+    // Concurrency pool (max 4 concurrent check operations)
+    const checkResults: CheckResult[] = new Array(availableManagers.length);
+    let taskIndex = 0;
+    const concurrency = Math.min(4, availableManagers.length);
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (taskIndex < availableManagers.length) {
+        const idx = taskIndex++;
+        checkResults[idx] = await checkTask(availableManagers[idx]);
+      }
+    });
+    await Promise.all(workers);
 
     // 3. Flatten and sort updates
     const allUpdates: UpdateItem[] = [];
@@ -125,12 +139,16 @@ export class UpdaterEngine {
     const successful = results.filter((r) => r.success).length;
     const failed = results.filter((r) => !r.success).length;
     const totalUpdated = results.reduce((acc, r) => acc + r.updatedCount, 0);
+    const totalPending = Array.from(itemsByManager.values()).reduce(
+      (acc, items) => acc + items.length,
+      0
+    );
 
     return {
       scannedManagersCount: this.managers.length,
       availableManagersCount: managersToRun.length,
-      upToDateManagersCount: managersToRun.length - results.filter((r) => r.updatedCount > 0).length,
-      pendingUpdatesCount: itemsByManager.size,
+      upToDateManagersCount: results.filter((r) => r.success && r.updatedCount === 0).length,
+      pendingUpdatesCount: totalPending,
       executedCount: results.length,
       successCount: successful,
       failedCount: failed,

@@ -141,8 +141,8 @@ export class NpmManager extends BasePackageManager {
       }
     }
 
-    const success = updatedCount > 0 || steps.every((s) => s.status === 'success');
     const failedSteps = steps.filter((s) => s.status === 'failed');
+    const success = failedSteps.length === 0;
 
     return {
       managerId: this.id,

@@ -92,6 +92,30 @@ export class MacPortsManager extends BasePackageManager {
     const startTime = Date.now();
     const steps: UpdateStep[] = [];
 
+    // Check sudo privileges beforehand to avoid hanging 3 minutes on password prompts
+    if (!options.dryRun && process.getuid?.() !== 0) {
+      const sudoCheck = await safeExec('sudo', ['-n', 'true'], { timeoutMs: 3000 });
+      if (!sudoCheck.success) {
+        return {
+          managerId: this.id,
+          managerName: this.name,
+          icon: this.icon,
+          success: false,
+          updatedCount: 0,
+          durationMs: Date.now() - startTime,
+          steps: [
+            {
+              name: 'sudo privileges',
+              command: 'sudo -n true',
+              status: 'failed',
+              error: 'MacPorts requires sudo privileges. Run "sudo -v" in your terminal before uup.',
+            },
+          ],
+          error: 'MacPorts requires sudo privileges. Run "sudo -v" before running uup.',
+        };
+      }
+    }
+
     // Step 1: sudo port selfupdate
     const selfupdateStep = await this.executeStep(
       'sudo port selfupdate',

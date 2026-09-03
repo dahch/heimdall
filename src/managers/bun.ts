@@ -129,16 +129,24 @@ export class BunManager extends BasePackageManager {
     );
     steps.push(updateStep);
 
-    // Step 3: bun upgrade (upgrades bun itself if available)
-    const upgradeStep = await this.executeStep(
-      'bun upgrade',
-      'bun',
-      ['upgrade'],
-      options
-    );
-    steps.push(upgradeStep);
+    // Step 3: bun upgrade (only if not installed/managed via Homebrew)
+    const whichBun = await safeExec('which', ['bun'], { timeoutMs: 3000 });
+    const isBrewBun = whichBun.stdout.includes('/opt/homebrew') || whichBun.stdout.includes('/Cellar');
+    if (!isBrewBun) {
+      const upgradeStep = await this.executeStep(
+        'bun upgrade',
+        'bun',
+        ['upgrade'],
+        options
+      );
+      if (upgradeStep.status === 'failed' && upgradeStep.error?.includes('Homebrew')) {
+        upgradeStep.status = 'skipped';
+      }
+      steps.push(upgradeStep);
+    }
 
-    const success = steps.every((s) => s.status === 'success');
+    const hasFailedStep = steps.some((s) => s.status === 'failed');
+    const success = !hasFailedStep;
 
     return {
       managerId: this.id,

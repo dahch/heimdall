@@ -8,16 +8,6 @@ export function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
-export function formatVersionChange(current: string, latest: string): string {
-  if (!current || current === 'unknown') {
-    return `${pc.dim('unknown')} ${pc.cyan('➜')} ${pc.green(latest || 'latest')}`;
-  }
-  if (!latest || latest === 'unknown') {
-    return `${pc.yellow(current)} ${pc.cyan('➜')} ${pc.green('update')}`;
-  }
-  return `${pc.yellow(current)} ${pc.cyan('➜')} ${pc.green(pc.bold(latest))}`;
-}
-
 export function renderUpdatesTable(items: UpdateItem[]): string {
   if (items.length === 0) {
     return pc.dim('  No updates pending.');

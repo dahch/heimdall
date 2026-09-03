@@ -43,32 +43,39 @@ export class YarnManager extends BasePackageManager {
       const installed: { name: string; currentVersion: string }[] = [];
 
       for (const line of lines) {
-        const match = line.match(/info\s+"([^@]+)@([^"]+)"/);
+        const match = line.match(/info\s+"((?:@[^/]+\/)?[^@]+)@([^"]+)"/);
         if (match) {
           installed.push({ name: match[1], currentVersion: match[2] });
         }
       }
 
-      // Check registry version for installed global packages
+      // Check registry version via native fetch (no N+1 sub-processes, decoupled from npm binary)
       await Promise.all(
         installed.map(async ({ name, currentVersion }) => {
           try {
-            const viewRes = await safeExec('npm', ['view', name, 'version'], {
-              timeoutMs: 4000,
-            });
-            const latest = viewRes.stdout.trim();
-            if (latest && latest !== currentVersion) {
-              updates.push({
-                managerId: this.id,
-                managerName: this.name,
-                name,
-                currentVersion,
-                latestVersion: latest,
-                type: 'global-pkg',
-              });
+            const res = await fetch(
+              `https://registry.npmjs.org/${encodeURIComponent(name).replace('%40', '@')}/latest`,
+              {
+                signal: AbortSignal.timeout(3000),
+                headers: { Accept: 'application/json' },
+              }
+            );
+            if (res.ok) {
+              const data = (await res.json()) as { version?: string };
+              const latest = data.version;
+              if (latest && latest !== currentVersion) {
+                updates.push({
+                  managerId: this.id,
+                  managerName: this.name,
+                  name,
+                  currentVersion,
+                  latestVersion: latest,
+                  type: 'global-pkg',
+                });
+              }
             }
           } catch {
-            // ignore check failure
+            // Ignore network lookup timeouts/errors gracefully
           }
         })
       );

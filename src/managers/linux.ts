@@ -86,6 +86,30 @@ export class AptManager extends BasePackageManager {
     const startTime = Date.now();
     const steps: UpdateStep[] = [];
 
+    // Check sudo privileges beforehand to avoid hanging on password prompts
+    if (!options.dryRun && process.getuid?.() !== 0) {
+      const sudoCheck = await safeExec('sudo', ['-n', 'true'], { timeoutMs: 3000 });
+      if (!sudoCheck.success) {
+        return {
+          managerId: this.id,
+          managerName: this.name,
+          icon: this.icon,
+          success: false,
+          updatedCount: 0,
+          durationMs: Date.now() - startTime,
+          steps: [
+            {
+              name: 'sudo privileges',
+              command: 'sudo -n true',
+              status: 'failed',
+              error: 'APT requires sudo privileges. Run "sudo -v" in your terminal before uup.',
+            },
+          ],
+          error: 'APT requires sudo privileges. Run "sudo -v" before running uup.',
+        };
+      }
+    }
+
     // Step 1: sudo apt-get update
     const updateStep = await this.executeStep(
       'sudo apt-get update',

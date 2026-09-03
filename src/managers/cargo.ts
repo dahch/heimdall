@@ -138,7 +138,8 @@ export class CargoManager extends BasePackageManager {
       steps.push(cargoStep);
     }
 
-    const success = steps.length > 0 && steps.every((s) => s.status === 'success');
+    const hasFailedStep = steps.some((s) => s.status === 'failed');
+    const success = !hasFailedStep;
 
     return {
       managerId: this.id,

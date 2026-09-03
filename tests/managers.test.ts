@@ -243,4 +243,132 @@ wget                           1.21.3 < 1.21.4
       expect(result.updates[0].latestVersion).toBe('15.2');
     });
   });
+
+  describe('YarnManager', () => {
+    it('parses both regular and scoped packages from yarn global list', async () => {
+      const { YarnManager } = await import('../src/managers/yarn.js');
+      const manager = new YarnManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: `
+yarn global v1.22.22
+info "create-vite@6.1.0" has binaries:
+   - create-vite
+info "@angular/cli@17.0.0" has binaries:
+   - ng
+Done in 0.02s.
+        `,
+        stderr: '',
+        exitCode: 0,
+        success: true,
+        timedOut: false,
+      });
+
+      // Mock global fetch for registry lookup
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('create-vite')) {
+          return {
+            ok: true,
+            json: async () => ({ version: '9.2.0' }),
+          } as Response;
+        }
+        if (urlStr.includes('%40angular') || urlStr.includes('@angular')) {
+          return {
+            ok: true,
+            json: async () => ({ version: '17.3.0' }),
+          } as Response;
+        }
+        return { ok: false } as Response;
+      });
+
+      const result = await manager.checkUpdates();
+      expect(result.updates).toHaveLength(2);
+      expect(result.updates[0].name).toBe('create-vite');
+      expect(result.updates[0].latestVersion).toBe('9.2.0');
+      expect(result.updates[1].name).toBe('@angular/cli');
+      expect(result.updates[1].latestVersion).toBe('17.3.0');
+
+      fetchSpy.mockRestore();
+    });
+  });
+
+  describe('PipxManager', () => {
+    it('queries PyPI API and only reports packages when a newer version exists', async () => {
+      const { PipxManager } = await import('../src/managers/pipx.js');
+      const manager = new PipxManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: JSON.stringify({
+          venvs: {
+            black: { metadata: { main_package: { package_version: '23.1.0' } } },
+            ruff: { metadata: { main_package: { package_version: '0.4.0' } } },
+          },
+        }),
+        stderr: '',
+        exitCode: 0,
+        success: true,
+        timedOut: false,
+      });
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('black')) {
+          return {
+            ok: true,
+            json: async () => ({ info: { version: '24.1.0' } }),
+          } as Response;
+        }
+        // ruff is already up to date
+        if (urlStr.includes('ruff')) {
+          return {
+            ok: true,
+            json: async () => ({ info: { version: '0.4.0' } }),
+          } as Response;
+        }
+        return { ok: false } as Response;
+      });
+
+      const result = await manager.checkUpdates();
+      expect(result.updates).toHaveLength(1);
+      expect(result.updates[0].name).toBe('black');
+      expect(result.updates[0].currentVersion).toBe('23.1.0');
+      expect(result.updates[0].latestVersion).toBe('24.1.0');
+
+      fetchSpy.mockRestore();
+    });
+  });
+
+  describe('CargoManager', () => {
+    it('succeeds gracefully when no updater tools are installed', async () => {
+      const { CargoManager } = await import('../src/managers/cargo.js');
+      const manager = new CargoManager();
+      vi.spyOn(execUtils, 'commandExists').mockResolvedValue(false);
+
+      const result = await manager.executeUpdate([], { dryRun: false });
+      expect(result.success).toBe(true);
+      expect(result.steps).toHaveLength(0);
+      expect(result.error).toBeUndefined();
+    });
+  });
+
+  describe('AptManager', () => {
+    it('fails fast when non-interactive sudo is unavailable', async () => {
+      const { AptManager } = await import('../src/managers/linux.js');
+      const manager = new AptManager();
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        if (cmd === 'sudo' && args?.[0] === '-n') {
+          return { stdout: '', stderr: 'sudo: a password is required', exitCode: 1, success: false, timedOut: false };
+        }
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const result = await manager.executeUpdate(
+        [{ managerId: 'apt', managerName: 'APT', name: 'curl', currentVersion: '7.88', latestVersion: '7.89' }],
+        { dryRun: false }
+      );
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('APT requires sudo privileges');
+    });
+  });
 });

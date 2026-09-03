@@ -104,20 +104,13 @@ async function main() {
     itemsByManager.set(update.managerId, list);
   }
 
-  // If dry-run, output simulation and exit
-  if (options.dryRun) {
-    p.note(
-      pc.yellow(`[DRY RUN] ${allUpdates.length} update(s) detected across ${itemsByManager.size} manager(s). No actions taken.`),
-      'Dry Run Mode'
-    );
-    p.outro(pc.cyan('Dry run completed.'));
-    process.exit(0);
-  }
-
-  // Stage 3: General Confirmation
+  // Stage 3: General Confirmation or Dry Run
   let managersToUpdate: string[] = [];
 
-  if (options.yes) {
+  if (options.dryRun) {
+    managersToUpdate = Array.from(itemsByManager.keys());
+    p.log.info(pc.yellow(`[DRY RUN] Simulating updates for ${allUpdates.length} package(s)...`));
+  } else if (options.yes) {
     managersToUpdate = Array.from(itemsByManager.keys());
     p.log.info(pc.cyan('Flag -y provided: proceeding with all updates automatically.'));
   } else {
@@ -179,7 +172,14 @@ async function main() {
   }
 
   // Stage 4: Animated Execution with Real-Time Feedback
-  p.log.step(pc.bold(pc.cyan(`\nStarting updates for ${managersToUpdate.length} package manager(s)...`)));
+  const isSimulated = options.dryRun ?? false;
+  p.log.step(
+    pc.bold(
+      pc.cyan(
+        `\n${isSimulated ? '[DRY RUN] Simulating' : 'Starting'} updates for ${managersToUpdate.length} package manager(s)...`
+      )
+    )
+  );
 
   const updateSpinner = p.spinner();
 
@@ -188,18 +188,19 @@ async function main() {
     itemsByManager,
     {
       verbose: options.verbose,
-      dryRun: false,
+      dryRun: isSimulated,
       onStepStart: (stepName) => {
         updateSpinner.message(pc.cyan(`Running: ${stepName}...`));
       },
       onStepProgress: (stepName, logLine) => {
-        if (options.verbose && logLine) {
-          p.log.message(pc.dim(`  [${stepName}] ${logLine}`));
+        if (logLine) {
+          const truncated = logLine.length > 60 ? logLine.slice(0, 57) + '...' : logLine;
+          updateSpinner.message(pc.cyan(`${stepName} ${pc.dim(`[${truncated}]`)}`));
         }
       },
       onStepEnd: (stepName, success, error) => {
         if (!success && error) {
-          p.log.warn(pc.yellow(`  ⚠ ${stepName} encountered issue: ${error.split('\n')[0]}`));
+          updateSpinner.message(pc.yellow(`⚠ ${stepName}: ${error.split('\n')[0]}`));
         }
       },
     },
@@ -227,6 +228,7 @@ async function main() {
       )
     );
   } else {
+    process.exitCode = 1;
     p.outro(
       pc.bold(
         pc.yellow(

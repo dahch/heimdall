@@ -113,9 +113,9 @@ export class RubyGemManager extends BasePackageManager {
 
     // Step 2: gem cleanup
     const cleanupStep = await this.executeStep(
-      'gem cleanup --user-install',
+      'gem cleanup',
       'gem',
-      ['cleanup', '--user-install'],
+      ['cleanup'],
       options
     );
     steps.push(cleanupStep);

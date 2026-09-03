@@ -52,17 +52,36 @@ export class PipxManager extends BasePackageManager {
         try {
           const parsed = JSON.parse(stdout) as PipxListJson;
           if (parsed.venvs) {
-            for (const [pkgName, venvData] of Object.entries(parsed.venvs)) {
-              const current = venvData.metadata?.main_package?.package_version ?? 'unknown';
-              updates.push({
-                managerId: this.id,
-                managerName: this.name,
-                name: pkgName,
-                currentVersion: current,
-                latestVersion: 'latest',
-                type: 'pipx-app',
-              });
-            }
+            const entries = Object.entries(parsed.venvs);
+            await Promise.all(
+              entries.map(async ([pkgName, venvData]) => {
+                const current = venvData.metadata?.main_package?.package_version;
+                if (!current) return;
+
+                try {
+                  const response = await fetch(
+                    `https://pypi.org/pypi/${encodeURIComponent(pkgName)}/json`,
+                    { signal: AbortSignal.timeout(3000) }
+                  );
+                  if (response.ok) {
+                    const data = (await response.json()) as { info?: { version?: string } };
+                    const latest = data.info?.version;
+                    if (latest && latest !== current) {
+                      updates.push({
+                        managerId: this.id,
+                        managerName: this.name,
+                        name: pkgName,
+                        currentVersion: current,
+                        latestVersion: latest,
+                        type: 'pipx-app',
+                      });
+                    }
+                  }
+                } catch {
+                  // Ignore network lookup timeouts/errors gracefully
+                }
+              })
+            );
           }
         } catch {
           // ignore parsing error
