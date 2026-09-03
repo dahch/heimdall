@@ -1,5 +1,5 @@
 import { BasePackageManager } from './base.js';
-import { safeExec } from '../utils/exec.js';
+import { commandExists, safeExec } from '../utils/exec.js';
 import type {
   ManagerCategory,
   CheckOptions,
@@ -16,6 +16,21 @@ export class RubyGemManager extends BasePackageManager {
   readonly icon = '💎';
   readonly category: ManagerCategory = 'language';
   protected readonly binary = 'gem';
+
+  async isAvailable(): Promise<boolean> {
+    const hasCmd = await commandExists(this.binary);
+    if (!hasCmd) return false;
+
+    // Skip Apple system Ruby (/usr/bin/gem), which is deprecated, SIP-protected,
+    // and causes hangs/failures when attempting to compile native C extensions.
+    const whichRes = await safeExec('which', ['gem'], { timeoutMs: 3000 });
+    const gemPath = whichRes.stdout.trim();
+    if (gemPath === '/usr/bin/gem' || gemPath.startsWith('/System/Library')) {
+      return false;
+    }
+
+    return true;
+  }
 
   async checkUpdates(options?: CheckOptions): Promise<CheckResult> {
     const startTime = Date.now();

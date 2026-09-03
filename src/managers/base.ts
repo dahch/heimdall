@@ -65,7 +65,9 @@ export abstract class BasePackageManager implements PackageManager {
     const durationMs = Date.now() - startTime;
     const success = result.success;
     const errorMsg = !success
-      ? (result.stderr || result.stdout || (result.timedOut ? 'Step timed out' : 'Command exited with error')).trim()
+      ? (result.timedOut
+          ? `Step timed out after ${Math.round((options.timeoutMs ?? 180000) / 1000)}s`
+          : result.stderr || result.stdout || 'Command exited with error').trim()
       : undefined;
 
     options.onStepEnd?.(stepName, success, errorMsg);

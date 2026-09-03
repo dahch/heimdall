@@ -91,44 +91,70 @@ export class NpmManager extends BasePackageManager {
   ): Promise<UpdateExecutionResult> {
     const startTime = Date.now();
     const steps: UpdateStep[] = [];
+    let updatedCount = 0;
 
-    // Step: npm update -g
+    // Step 1: Attempt global update with legacy-peer-deps to bypass ERESOLVE conflicts
     const updateStep = await this.executeStep(
-      'npm update -g',
+      'npm update -g --legacy-peer-deps',
       'npm',
-      ['update', '-g'],
+      ['update', '-g', '--legacy-peer-deps'],
       options
     );
     steps.push(updateStep);
 
-    // If there were packages where latest > wanted (e.g. major version bumps),
-    // npm update -g might leave them untouched. Let's upgrade them explicitly if needed.
-    const majorUpgrades = items.filter(
-      (item) => item.latestVersion && item.latestVersion !== item.currentVersion
-    );
-
-    if (updateStep.status === 'success' && majorUpgrades.length > 0) {
-      const pkgsToUpgrade = majorUpgrades.map((item) => `${item.name}@latest`);
-      const installStep = await this.executeStep(
-        `npm install -g ${pkgsToUpgrade.length} package(s)`,
-        'npm',
-        ['install', '-g', ...pkgsToUpgrade],
-        options
+    if (updateStep.status === 'success') {
+      updatedCount = items.length;
+      // Upgrade major versions if any
+      const majorUpgrades = items.filter(
+        (item) => item.latestVersion && item.latestVersion !== item.currentVersion
       );
-      steps.push(installStep);
+      if (majorUpgrades.length > 0) {
+        const pkgsToUpgrade = majorUpgrades.map((item) => `${item.name}@latest`);
+        const installStep = await this.executeStep(
+          `npm install -g ${pkgsToUpgrade.length} package(s)`,
+          'npm',
+          ['install', '-g', '--legacy-peer-deps', ...pkgsToUpgrade],
+          options
+        );
+        steps.push(installStep);
+      }
+    } else {
+      // Step 2 Fallback: If monolithic npm update -g failed (e.g. peer conflicts or custom install hooks in 1 package),
+      // update packages individually so one bad package doesn't break the others!
+      options.onStepProgress?.(
+        'npm update',
+        'Batch update hit peer conflicts; falling back to resilient individual package updates...'
+      );
+
+      for (const item of items) {
+        const pkgTarget = item.latestVersion ? `${item.name}@${item.latestVersion}` : `${item.name}@latest`;
+        const itemStep = await this.executeStep(
+          `npm install -g ${item.name}`,
+          'npm',
+          ['install', '-g', '--legacy-peer-deps', pkgTarget],
+          options
+        );
+        steps.push(itemStep);
+        if (itemStep.status === 'success') {
+          updatedCount++;
+        }
+      }
     }
 
-    const success = steps.every((s) => s.status === 'success');
+    const success = updatedCount > 0 || steps.every((s) => s.status === 'success');
+    const failedSteps = steps.filter((s) => s.status === 'failed');
 
     return {
       managerId: this.id,
       managerName: this.name,
       icon: this.icon,
       success,
-      updatedCount: items.length,
+      updatedCount,
       durationMs: Date.now() - startTime,
       steps,
-      error: !success ? steps.find((s) => s.status === 'failed')?.error : undefined,
+      error: failedSteps.length > 0
+        ? `${failedSteps.length} step(s) encountered issues: ${failedSteps[0].error?.split('\n')[0]}`
+        : undefined,
     };
   }
 }
