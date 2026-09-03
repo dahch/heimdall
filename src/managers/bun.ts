@@ -101,7 +101,26 @@ export class BunManager extends BasePackageManager {
     const startTime = Date.now();
     const steps: UpdateStep[] = [];
 
-    // Step 1: bun update -g
+    // Step 1: Explicitly install latest versions for outdated packages.
+    // This is crucial: bun update -g respects semver pins in ~/.bun/install/global/package.json
+    // and refuses to upgrade across major versions (e.g. 17.x -> 18.x) without bun add -g.
+    if (items.length > 0) {
+      const pkgsToUpgrade = items.map((item) =>
+        item.latestVersion && item.latestVersion !== 'latest' && item.latestVersion !== 'unknown'
+          ? `${item.name}@${item.latestVersion}`
+          : `${item.name}@latest`
+      );
+
+      const addStep = await this.executeStep(
+        `bun add -g ${pkgsToUpgrade.length} package(s)`,
+        'bun',
+        ['add', '-g', ...pkgsToUpgrade],
+        options
+      );
+      steps.push(addStep);
+    }
+
+    // Step 2: bun update -g (for any other dependencies)
     const updateStep = await this.executeStep(
       'bun update -g',
       'bun',
@@ -110,7 +129,7 @@ export class BunManager extends BasePackageManager {
     );
     steps.push(updateStep);
 
-    // Step 2: bun upgrade (upgrades bun itself if available)
+    // Step 3: bun upgrade (upgrades bun itself if available)
     const upgradeStep = await this.executeStep(
       'bun upgrade',
       'bun',

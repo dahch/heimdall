@@ -40,23 +40,38 @@ export class YarnManager extends BasePackageManager {
 
       const updates: UpdateItem[] = [];
       const lines = execRes.stdout.split('\n');
+      const installed: { name: string; currentVersion: string }[] = [];
 
       for (const line of lines) {
         const match = line.match(/info\s+"([^@]+)@([^"]+)"/);
         if (match) {
-          const [, name, currentVersion] = match;
-          // In yarn v1 global outdated is not directly supported via a JSON flag,
-          // so we detect installed global packages candidate for global upgrade
-          updates.push({
-            managerId: this.id,
-            managerName: this.name,
-            name,
-            currentVersion,
-            latestVersion: 'latest',
-            type: 'global-pkg',
-          });
+          installed.push({ name: match[1], currentVersion: match[2] });
         }
       }
+
+      // Check registry version for installed global packages
+      await Promise.all(
+        installed.map(async ({ name, currentVersion }) => {
+          try {
+            const viewRes = await safeExec('npm', ['view', name, 'version'], {
+              timeoutMs: 4000,
+            });
+            const latest = viewRes.stdout.trim();
+            if (latest && latest !== currentVersion) {
+              updates.push({
+                managerId: this.id,
+                managerName: this.name,
+                name,
+                currentVersion,
+                latestVersion: latest,
+                type: 'global-pkg',
+              });
+            }
+          } catch {
+            // ignore check failure
+          }
+        })
+      );
 
       return {
         managerId: this.id,
@@ -88,7 +103,24 @@ export class YarnManager extends BasePackageManager {
     const startTime = Date.now();
     const steps: UpdateStep[] = [];
 
-    // Step 1: yarn global upgrade
+    // Step 1: Explicitly add latest for packages with major or pinned updates
+    if (items.length > 0) {
+      const pkgsToUpgrade = items.map((item) =>
+        item.latestVersion && item.latestVersion !== 'latest' && item.latestVersion !== 'unknown'
+          ? `${item.name}@${item.latestVersion}`
+          : `${item.name}@latest`
+      );
+
+      const addStep = await this.executeStep(
+        `yarn global add ${pkgsToUpgrade.length} package(s)`,
+        'yarn',
+        ['global', 'add', ...pkgsToUpgrade],
+        options
+      );
+      steps.push(addStep);
+    }
+
+    // Step 2: yarn global upgrade (for transitive/sub dependencies)
     const upgradeStep = await this.executeStep(
       'yarn global upgrade',
       'yarn',
