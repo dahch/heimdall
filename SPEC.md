@@ -197,14 +197,21 @@ export interface PackageManager {
    - `YarnManager`: Runs `yarn global add <pkg>@latest` prior to `yarn global upgrade`.
 5. **Bun Homebrew Coexistence**:
    - `BunManager` checks `which bun`. If located in `/opt/homebrew` or `/Cellar`, `bun upgrade` is skipped (or marked skipped if attempted) to avoid corrupting Homebrew formula linkages.
-6. **npm Multi-Step Fallback**:
-   - `NpmManager` attempts `npm update -g --legacy-peer-deps`. If this monolithic command fails (e.g. peer conflicts in a single package), it falls back to isolated per-package `npm install -g --legacy-peer-deps <pkg>@latest` executions.
+6. **npm Multi-Tier Resilient Strategy**:
+   - `NpmManager` targets outdated packages directly via `npm install -g --legacy-peer-deps <pkg>@<version>`.
+   - If batch installation fails (e.g. peer dependency resolution conflicts across packages), it automatically falls back to isolated per-package installation so that problematic packages do not block valid packages.
+   - If an individual package installation fails due to install script failures (such as package-manager enforce scripts like `npx only-allow pnpm`), it retries once with `--ignore-scripts`.
+   - Batch fallback trigger steps are not counted as package failures when subsequent per-package steps succeed.
+7. **Sanitized Error Extraction**:
+   - Error message reporting uses `extractErrorMessage()` to filter out ambient warnings (`npm warn`, `warning:`, `notice`) from stderr, surfacing only actionable error statements to avoid misleading diagnostics.
 
 ---
 
 ## 6. Non-Functional Requirements
 
 1. **Safety**: Commands are spawned with non-interactive flags (`CI=true`, `DEBIAN_FRONTEND=noninteractive`, `stdin: 'ignore'`). Commands must never block indefinitely waiting for user TTY input.
-2. **Observability**: Subprocess output is captured via line-by-line streaming. Spinners update dynamically with the latest 57 characters of active process output.
+2. **Observability**: Subprocess output is captured via line-by-line streaming. Spinners and progress reporters display live elapsed time and persistent completion markers per step.
 3. **Execution Safety**: All execution steps default to a 180-second timeout per command (`options.timeoutMs ?? 180000`).
 4. **Idempotence**: Running `uup` repeatedly on an already updated system performs a non-destructive read-only check and exits cleanly.
+5. **Minimalist Aesthetic**: Tabular updates and execution feedback emphasize clean typography, subtle borders, high contrast indicators, and persistent status lines.
+

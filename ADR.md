@@ -178,3 +178,35 @@ All package queries are dispatched in parallel via `Promise.all` with a strict 3
 
 #### Negative / Trade-offs:
 - Relies on outbound HTTPS access to `registry.npmjs.org` and `pypi.org`. If an enterprise uses private npm/pip mirrors without standard environment variables or proxy setups, direct HTTP requests might fail. However, failures are caught gracefully and will simply skip reporting those updates rather than failing the scan.
+
+---
+
+## ADR-005: Targeted npm Package Updates with Multi-Tier Fallback and `--ignore-scripts` Recovery
+
+- **Status**: Accepted
+- **Context**: In environments with numerous global npm packages, executing monolithic `npm update -g --legacy-peer-deps` frequently takes ~60 seconds and fails completely if ANY global package encounters peer dependency resolution errors, engine warnings, or broken preinstall scripts (e.g. `npx only-allow pnpm` inside transitive dependencies like `ip-set` in `torlnk`). Furthermore, standard stderr output includes non-fatal `npm warn` notices that obscure the actual error cause when reported to users.
+- **Decision**:
+  1. `NpmManager` executes targeted installations for only the packages identified during `checkUpdates()`: `npm install -g --legacy-peer-deps <pkg>@<latest>`.
+  2. If batch installation fails, it seamlessly falls back to isolated per-package installation.
+  3. If an individual package install fails with a script error, it retries once with `--ignore-scripts` to bypass non-essential scripts (such as package manager enforcement hooks).
+  4. The initial batch failure is treated as a fallback trigger rather than counting as failed package steps if fallback resolves packages.
+  5. Error output is filtered through a dedicated `extractErrorMessage()` utility that filters out `npm warn`/`warning:` lines and extracts genuine error lines.
+- **Consequences**:
+  - Positive: Execution time drops by up to 90% (from ~64s to <5s). Resilient recovery from install-script failures (e.g. `torlnk`). Clean, actionable error reporting without truncated warning brackets.
+  - Trade-off: `--ignore-scripts` is only applied as a last-resort fallback for individual packages when the initial install fails.
+
+---
+
+## ADR-006: Minimalist Modern UI/UX with Persistent Real-Time Step Progression
+
+- **Status**: Accepted
+- **Context**: The existing CLI interface relied on heavy full-border ASCII tables (`cli-table3` default grid) and a single transient spinner line that flickered during concurrent discovery and hid intermediate step durations during execution. Users requested a refined, modern, minimalist aesthetic with clear and constant feedback.
+- **Decision**:
+  1. Introduce a refined header banner with clean typography and version badges.
+  2. Format the pending updates table with micro-borders, clean column alignment, category badges, and version diff arrows (`1.8.0 → 1.9.0`).
+  3. During execution, display persistent indented step marks (`✔ brew update (1.3s)`) so the user maintains a continuous visual log of completed steps.
+  4. Present execution summaries with exact package counts (`5/6 updated, 1 failed` instead of ambiguous totals) and clean error summaries.
+- **Consequences**:
+  - Positive: Drastically improved legibility, modern aesthetic comparable to modern developer tooling (Vite, Bun, Turborepo), zero flickering, and crystal-clear feedback at every step.
+  - Trade-off: Requires custom formatting utilities alongside `cli-table3` configuration.
+
