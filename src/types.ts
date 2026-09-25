@@ -41,7 +41,7 @@ export interface ExecutionOptions {
   timeoutMs?: number;
   onStepStart?: (step: string) => void;
   onStepProgress?: (step: string, logLine: string) => void;
-  onStepEnd?: (step: string, success: boolean, error?: string) => void;
+  onStepEnd?: (step: string, success: boolean, error?: string, durationMs?: number) => void;
 }
 
 export interface UpdateExecutionResult {

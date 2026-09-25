@@ -1,4 +1,5 @@
 import { commandExists, safeExec, type SafeExecOptions } from '../utils/exec.js';
+import { extractErrorMessage } from '../utils/formatting.js';
 import type {
   PackageManager,
   ManagerCategory,
@@ -64,13 +65,14 @@ export abstract class BasePackageManager implements PackageManager {
 
     const durationMs = Date.now() - startTime;
     const success = result.success;
+    const rawOutput = (result.stderr || result.stdout || '').trim();
     const errorMsg = !success
       ? (result.timedOut
           ? `Step timed out after ${Math.round((options.timeoutMs ?? 180000) / 1000)}s`
-          : result.stderr || result.stdout || 'Command exited with error').trim()
+          : extractErrorMessage(rawOutput))
       : undefined;
 
-    options.onStepEnd?.(stepName, success, errorMsg);
+    options.onStepEnd?.(stepName, success, errorMsg, durationMs);
 
     return {
       name: stepName,

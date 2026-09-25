@@ -139,7 +139,6 @@ export class HomebrewManager extends BasePackageManager {
   ): Promise<UpdateExecutionResult> {
     const startTime = Date.now();
     const steps: UpdateStep[] = [];
-    let allSucceeded = true;
 
     // Step 1: brew update (fetches newest formulae and homebrew itself)
     const updateStep = await this.executeStep(
@@ -149,29 +148,42 @@ export class HomebrewManager extends BasePackageManager {
       options
     );
     steps.push(updateStep);
-    if (updateStep.status === 'failed') allSucceeded = false;
 
-    // Step 2: brew upgrade (upgrades formulae)
-    const upgradeStep = await this.executeStep(
-      'brew upgrade',
-      'brew',
-      ['upgrade'],
-      options
-    );
-    steps.push(upgradeStep);
-    if (upgradeStep.status === 'failed') allSucceeded = false;
+    // Step 2: Determine what types of items are pending:
+    const hasFormulae = items.some((i) => i.type === 'formula' || !i.type || i.type === 'package');
+    const hasCasks = items.some((i) => i.type === 'cask');
 
-    // Step 3: brew upgrade --cask (upgrades GUI applications)
-    const caskStep = await this.executeStep(
-      'brew upgrade --cask',
-      'brew',
-      ['upgrade', '--cask'],
-      options
-    );
-    steps.push(caskStep);
-    if (caskStep.status === 'failed') allSucceeded = false;
+    let upgradeSucceeded = false;
+    if (hasCasks && !hasFormulae) {
+      const caskStep = await this.executeStep(
+        'brew upgrade --cask',
+        'brew',
+        ['upgrade', '--cask'],
+        options
+      );
+      steps.push(caskStep);
+      upgradeSucceeded = caskStep.status === 'success';
+    } else if (hasFormulae && !hasCasks) {
+      const formulaStep = await this.executeStep(
+        'brew upgrade --formula',
+        'brew',
+        ['upgrade', '--formula'],
+        options
+      );
+      steps.push(formulaStep);
+      upgradeSucceeded = formulaStep.status === 'success';
+    } else {
+      const upgradeStep = await this.executeStep(
+        'brew upgrade',
+        'brew',
+        ['upgrade'],
+        options
+      );
+      steps.push(upgradeStep);
+      upgradeSucceeded = upgradeStep.status === 'success';
+    }
 
-    // Step 4: brew cleanup (removes old downloads and outdated versions)
+    // Step 3: brew cleanup (removes old downloads and outdated versions)
     const cleanupStep = await this.executeStep(
       'brew cleanup',
       'brew',
@@ -179,19 +191,27 @@ export class HomebrewManager extends BasePackageManager {
       options
     );
     steps.push(cleanupStep);
-    if (cleanupStep.status === 'failed') allSucceeded = false;
+
+    const failedSteps = steps.filter((s) => s.status === 'failed');
+    const success = failedSteps.length === 0;
+
+    let error: string | undefined;
+    if (failedSteps.length > 0) {
+      const failedDetails = failedSteps
+        .map((s) => `${s.name}${s.error ? `: ${s.error}` : ''}`)
+        .join('; ');
+      error = `${failedSteps.length} step(s) failed: ${failedDetails}`;
+    }
 
     return {
       managerId: this.id,
       managerName: this.name,
       icon: this.icon,
-      success: allSucceeded,
-      updatedCount: items.length,
+      success,
+      updatedCount: upgradeSucceeded ? items.length : 0,
       durationMs: Date.now() - startTime,
       steps,
-      error: !allSucceeded
-        ? steps.find((s) => s.status === 'failed')?.error ?? 'One or more Homebrew steps failed'
-        : undefined,
+      error,
     };
   }
 }

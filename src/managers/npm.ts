@@ -93,56 +93,108 @@ export class NpmManager extends BasePackageManager {
     const steps: UpdateStep[] = [];
     let updatedCount = 0;
 
-    // Step 1: Attempt global update with legacy-peer-deps to bypass ERESOLVE conflicts
-    const updateStep = await this.executeStep(
-      'npm update -g --legacy-peer-deps',
+    if (items.length === 0) {
+      return {
+        managerId: this.id,
+        managerName: this.name,
+        icon: this.icon,
+        success: true,
+        updatedCount: 0,
+        durationMs: Date.now() - startTime,
+        steps: [],
+      };
+    }
+
+    // Step 1: Attempt targeted batch install with --legacy-peer-deps
+    const targets = items.map((i) =>
+      i.latestVersion && i.latestVersion !== 'unknown' ? `${i.name}@${i.latestVersion}` : `${i.name}@latest`
+    );
+
+    const batchStep = await this.executeStep(
+      `npm install -g --legacy-peer-deps (${items.length} pkgs)`,
       'npm',
-      ['update', '-g', '--legacy-peer-deps'],
+      ['install', '-g', '--legacy-peer-deps', ...targets],
       options
     );
-    steps.push(updateStep);
 
-    if (updateStep.status === 'success') {
+    if (batchStep.status === 'success') {
+      steps.push(batchStep);
       updatedCount = items.length;
-      // Upgrade major versions if any
-      const majorUpgrades = items.filter(
-        (item) => item.latestVersion && item.latestVersion !== item.currentVersion
-      );
-      if (majorUpgrades.length > 0) {
-        const pkgsToUpgrade = majorUpgrades.map((item) => `${item.name}@latest`);
-        const installStep = await this.executeStep(
-          `npm install -g ${pkgsToUpgrade.length} package(s)`,
-          'npm',
-          ['install', '-g', '--legacy-peer-deps', ...pkgsToUpgrade],
-          options
-        );
-        steps.push(installStep);
-      }
     } else {
-      // Step 2 Fallback: If monolithic npm update -g failed (e.g. peer conflicts or custom install hooks in 1 package),
-      // update packages individually so one bad package doesn't break the others!
+      // Step 2: Batch hit conflicts. Mark batch step as skipped (fallback trigger)
+      // so it does not count as a package failure when individual installs succeed.
+      batchStep.status = 'skipped';
+      steps.push(batchStep);
+
       options.onStepProgress?.(
-        'npm update',
-        'Batch update hit peer conflicts; falling back to resilient individual package updates...'
+        'npm install',
+        'Batch install hit conflicts; falling back to per-package isolated installs...'
       );
 
       for (const item of items) {
-        const pkgTarget = item.latestVersion ? `${item.name}@${item.latestVersion}` : `${item.name}@latest`;
+        const pkgTarget =
+          item.latestVersion && item.latestVersion !== 'unknown'
+            ? `${item.name}@${item.latestVersion}`
+            : `${item.name}@latest`;
+
         const itemStep = await this.executeStep(
           `npm install -g ${item.name}`,
           'npm',
           ['install', '-g', '--legacy-peer-deps', pkgTarget],
           options
         );
-        steps.push(itemStep);
+
         if (itemStep.status === 'success') {
           updatedCount++;
+          steps.push(itemStep);
+        } else {
+          // If the failure was due to install scripts (e.g. only-allow pnpm or broken native builds), retry with --ignore-scripts
+          const errLower = (itemStep.error ?? '').toLowerCase();
+          const isScriptIssue =
+            errLower.includes('only-allow') ||
+            errLower.includes('sh -c') ||
+            errLower.includes('preinstall') ||
+            errLower.includes('postinstall') ||
+            errLower.includes('install script') ||
+            errLower.includes('node-gyp') ||
+            errLower.includes('254');
+
+          if (isScriptIssue) {
+            options.onStepProgress?.(
+              `npm install -g ${item.name}`,
+              `Install script failed; retrying with --ignore-scripts...`
+            );
+
+            const retryStep = await this.executeStep(
+              `npm install -g ${item.name} (--ignore-scripts)`,
+              'npm',
+              ['install', '-g', '--legacy-peer-deps', '--ignore-scripts', pkgTarget],
+              options
+            );
+
+            if (retryStep.status === 'success') {
+              updatedCount++;
+              steps.push(retryStep);
+            } else {
+              steps.push(retryStep);
+            }
+          } else {
+            steps.push(itemStep);
+          }
         }
       }
     }
 
     const failedSteps = steps.filter((s) => s.status === 'failed');
     const success = failedSteps.length === 0;
+
+    let errorSummary: string | undefined;
+    if (!success) {
+      const failedDetails = failedSteps
+        .map((s) => `${s.name}${s.error ? `: ${s.error}` : ''}`)
+        .join('; ');
+      errorSummary = `${failedSteps.length} step(s) failed: ${failedDetails}`;
+    }
 
     return {
       managerId: this.id,
@@ -152,9 +204,7 @@ export class NpmManager extends BasePackageManager {
       updatedCount,
       durationMs: Date.now() - startTime,
       steps,
-      error: failedSteps.length > 0
-        ? `${failedSteps.length} step(s) encountered issues: ${failedSteps[0].error?.split('\n')[0]}`
-        : undefined,
+      error: errorSummary,
     };
   }
 }

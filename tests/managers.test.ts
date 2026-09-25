@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as execUtils from '../src/utils/exec.js';
 import { HomebrewManager } from '../src/managers/homebrew.js';
 import { NpmManager } from '../src/managers/npm.js';
@@ -10,6 +10,9 @@ import { MacPortsManager } from '../src/managers/macports.js';
 import { MacAppStoreManager } from '../src/managers/mas.js';
 
 describe('Package Managers Outdated Parsers', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
   describe('HomebrewManager', () => {
     it('parses formulae and casks from brew outdated JSON v2', async () => {
       const manager = new HomebrewManager();
@@ -57,6 +60,93 @@ describe('Package Managers Outdated Parsers', () => {
         type: 'cask',
       });
     });
+
+    it('executes targeted brew upgrade --cask when only casks are pending', async () => {
+      const manager = new HomebrewManager();
+      const executedCommands: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executedCommands.push(`${cmd} ${(args ?? []).join(' ')}`);
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const items = [
+        { managerId: 'homebrew', managerName: 'Homebrew', name: 'docker', currentVersion: '4.20', latestVersion: '4.21', type: 'cask' },
+      ];
+
+      const result = await manager.executeUpdate(items, { dryRun: false });
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(1);
+      expect(executedCommands).toEqual([
+        'brew update',
+        'brew upgrade --cask',
+        'brew cleanup',
+      ]);
+    });
+
+    it('executes targeted brew upgrade --formula when only formulae are pending', async () => {
+      const manager = new HomebrewManager();
+      const executedCommands: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executedCommands.push(`${cmd} ${(args ?? []).join(' ')}`);
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const items = [
+        { managerId: 'homebrew', managerName: 'Homebrew', name: 'git', currentVersion: '2.40', latestVersion: '2.42', type: 'formula' },
+      ];
+
+      const result = await manager.executeUpdate(items, { dryRun: false });
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(1);
+      expect(executedCommands).toEqual([
+        'brew update',
+        'brew upgrade --formula',
+        'brew cleanup',
+      ]);
+    });
+
+    it('executes combined brew upgrade when both formulae and casks are pending', async () => {
+      const manager = new HomebrewManager();
+      const executedCommands: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executedCommands.push(`${cmd} ${(args ?? []).join(' ')}`);
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const items = [
+        { managerId: 'homebrew', managerName: 'Homebrew', name: 'git', currentVersion: '2.40', latestVersion: '2.42', type: 'formula' },
+        { managerId: 'homebrew', managerName: 'Homebrew', name: 'docker', currentVersion: '4.20', latestVersion: '4.21', type: 'cask' },
+      ];
+
+      const result = await manager.executeUpdate(items, { dryRun: false });
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(2);
+      expect(executedCommands).toEqual([
+        'brew update',
+        'brew upgrade',
+        'brew cleanup',
+      ]);
+    });
+
+    it('handles step failure in HomebrewManager.executeUpdate with proper failure accounting', async () => {
+      const manager = new HomebrewManager();
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        if (args?.[0] === 'upgrade') {
+          return { stdout: '', stderr: 'Error: Permission denied', exitCode: 1, success: false, timedOut: false };
+        }
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const items = [
+        { managerId: 'homebrew', managerName: 'Homebrew', name: 'git', currentVersion: '2.40', latestVersion: '2.42', type: 'formula' },
+      ];
+
+      const result = await manager.executeUpdate(items, { dryRun: false });
+      expect(result.success).toBe(false);
+      expect(result.updatedCount).toBe(0);
+      expect(result.error).toContain('brew upgrade --formula');
+      expect(result.error).toContain('Error: Permission denied');
+    });
   });
 
   describe('NpmManager', () => {
@@ -83,6 +173,104 @@ describe('Package Managers Outdated Parsers', () => {
       expect(result.updates[0].name).toBe('eslint');
       expect(result.updates[0].currentVersion).toBe('8.0.0');
       expect(result.updates[0].latestVersion).toBe('9.0.0');
+    });
+
+    it('returns success immediately when no items are pending in executeUpdate', async () => {
+      const manager = new NpmManager();
+      const result = await manager.executeUpdate([], { dryRun: false });
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(0);
+      expect(result.steps).toHaveLength(0);
+    });
+
+    it('successfully executes targeted batch install with specific versions', async () => {
+      const manager = new NpmManager();
+      const executedCommands: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executedCommands.push(`${cmd} ${(args ?? []).join(' ')}`);
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const items = [
+        { managerId: 'npm', managerName: 'npm (global)', name: 'typescript', currentVersion: '5.0.0', latestVersion: '5.4.0' },
+        { managerId: 'npm', managerName: 'npm (global)', name: 'prettier', currentVersion: '3.0.0', latestVersion: '3.2.0' },
+      ];
+
+      const result = await manager.executeUpdate(items, { dryRun: false });
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(2);
+      expect(executedCommands).toEqual([
+        'npm install -g --legacy-peer-deps typescript@5.4.0 prettier@3.2.0',
+      ]);
+    });
+
+    it('falls back to per-package install and retries with --ignore-scripts when script fails', async () => {
+      const manager = new NpmManager();
+      const executedCommands: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        const full = `${cmd} ${(args ?? []).join(' ')}`;
+        executedCommands.push(full);
+
+        // Batch install fails
+        if (full.includes('typescript@5.4.0') && full.includes('torlnk@1.0.1')) {
+          return { stdout: '', stderr: 'npm error code ERESOLVE\nnpm error ERESOLVE could not resolve', exitCode: 1, success: false, timedOut: false };
+        }
+
+        // typescript isolated succeeds
+        if (full === 'npm install -g --legacy-peer-deps typescript@5.4.0') {
+          return { stdout: 'added 1 package', stderr: '', exitCode: 0, success: true, timedOut: false };
+        }
+
+        // torlnk without --ignore-scripts fails with script error (only-allow pnpm)
+        if (full === 'npm install -g --legacy-peer-deps torlnk@1.0.1') {
+          return {
+            stdout: '',
+            stderr: 'npm error code 1\nnpm error command failed\nnpm error command sh -c npx only-allow pnpm',
+            exitCode: 1,
+            success: false,
+            timedOut: false,
+          };
+        }
+
+        // torlnk retry with --ignore-scripts succeeds!
+        if (full === 'npm install -g --legacy-peer-deps --ignore-scripts torlnk@1.0.1') {
+          return { stdout: 'added 1 package', stderr: '', exitCode: 0, success: true, timedOut: false };
+        }
+
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const items = [
+        { managerId: 'npm', managerName: 'npm (global)', name: 'typescript', currentVersion: '5.0.0', latestVersion: '5.4.0' },
+        { managerId: 'npm', managerName: 'npm (global)', name: 'torlnk', currentVersion: '1.0.0', latestVersion: '1.0.1' },
+      ];
+
+      const result = await manager.executeUpdate(items, { dryRun: false });
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(2);
+      expect(result.steps.find((s) => s.status === 'skipped')).toBeDefined();
+      expect(executedCommands).toContain('npm install -g --legacy-peer-deps --ignore-scripts torlnk@1.0.1');
+    });
+
+    it('accurately accounts for failures when package update fails', async () => {
+      const manager = new NpmManager();
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: '',
+        stderr: 'npm error 404 Not Found - broken-pkg',
+        exitCode: 1,
+        success: false,
+        timedOut: false,
+      });
+
+      const items = [
+        { managerId: 'npm', managerName: 'npm (global)', name: 'broken-pkg', currentVersion: '1.0.0', latestVersion: '1.1.0' },
+      ];
+
+      const result = await manager.executeUpdate(items, { dryRun: false });
+      expect(result.success).toBe(false);
+      expect(result.updatedCount).toBe(0);
+      expect(result.error).toContain('broken-pkg');
+      expect(result.error).toContain('404 Not Found');
     });
   });
 
@@ -369,6 +557,105 @@ Done in 0.02s.
       );
       expect(result.success).toBe(false);
       expect(result.error).toContain('APT requires sudo privileges');
+    });
+  });
+
+  describe('HomebrewManager.executeUpdate selective updates', () => {
+    it('executes brew upgrade --cask when only casks are pending', async () => {
+      const manager = new HomebrewManager();
+      const execSpy = vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        success: true,
+        timedOut: false,
+      });
+
+      const result = await manager.executeUpdate(
+        [{ managerId: 'homebrew', managerName: 'Homebrew', name: 'raycast', currentVersion: '1.0', latestVersion: '1.1', type: 'cask' }],
+        { dryRun: false }
+      );
+
+      expect(result.success).toBe(true);
+      expect(execSpy).toHaveBeenCalledWith('brew', ['update'], expect.any(Object));
+      expect(execSpy).toHaveBeenCalledWith('brew', ['upgrade', '--cask'], expect.any(Object));
+      expect(execSpy).toHaveBeenCalledWith('brew', ['cleanup'], expect.any(Object));
+      expect(execSpy).not.toHaveBeenCalledWith('brew', ['upgrade', '--formula'], expect.any(Object));
+    });
+
+    it('executes brew upgrade --formula when only formulae are pending', async () => {
+      const manager = new HomebrewManager();
+      const execSpy = vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        success: true,
+        timedOut: false,
+      });
+
+      const result = await manager.executeUpdate(
+        [{ managerId: 'homebrew', managerName: 'Homebrew', name: 'git', currentVersion: '2.40', latestVersion: '2.42', type: 'formula' }],
+        { dryRun: false }
+      );
+
+      expect(result.success).toBe(true);
+      expect(execSpy).toHaveBeenCalledWith('brew', ['upgrade', '--formula'], expect.any(Object));
+    });
+  });
+
+  describe('NpmManager.executeUpdate resilience and script recovery', () => {
+    it('handles batch install failure and recovers with --ignore-scripts', async () => {
+      const manager = new NpmManager();
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        // If batch install (multiple packages or first attempt)
+        if (args?.includes('torlnk@1.9.0') && args?.includes('lodash@4.17.21')) {
+          return {
+            stdout: '',
+            stderr: 'npm warn EBADENGINE Unsupported engine {\nnpm error code ERESOLVE\nnpm error ERESOLVE could not resolve',
+            exitCode: 1,
+            success: false,
+            timedOut: false,
+          };
+        }
+
+        // lodash single install succeeds
+        if (args?.includes('lodash@4.17.21')) {
+          return { stdout: 'added 1 package', stderr: '', exitCode: 0, success: true, timedOut: false };
+        }
+
+        // torlnk without --ignore-scripts fails with script error
+        if (args?.includes('torlnk@1.9.0') && !args?.includes('--ignore-scripts')) {
+          return {
+            stdout: '',
+            stderr: 'npm error command failed\nnpm error command sh -c npx only-allow pnpm',
+            exitCode: 254,
+            success: false,
+            timedOut: false,
+          };
+        }
+
+        // torlnk with --ignore-scripts succeeds!
+        if (args?.includes('torlnk@1.9.0') && args?.includes('--ignore-scripts')) {
+          return { stdout: 'changed 226 packages in 1s', stderr: '', exitCode: 0, success: true, timedOut: false };
+        }
+
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const result = await manager.executeUpdate(
+        [
+          { managerId: 'npm', managerName: 'npm (global)', name: 'lodash', currentVersion: '4.17.20', latestVersion: '4.17.21', type: 'global-pkg' },
+          { managerId: 'npm', managerName: 'npm (global)', name: 'torlnk', currentVersion: '1.8.0', latestVersion: '1.9.0', type: 'global-pkg' },
+        ],
+        { dryRun: false }
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(2);
+      expect(result.error).toBeUndefined();
+      // The batch step should be recorded as 'skipped'
+      const batchStep = result.steps.find((s) => s.name.includes('pkgs'));
+      expect(batchStep?.status).toBe('skipped');
     });
   });
 });
