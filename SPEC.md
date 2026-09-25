@@ -25,7 +25,7 @@ The package registers two identical entry point binaries via `package.json`:
 - `uup` (primary short command)
 - `universal-updater` (canonical alias)
 
-Both point to [`dist/cli.js`](file:///Volumes/DahchDev/projects/universal-updater/dist/cli.js), built from [`src/cli.ts`](file:///Volumes/DahchDev/projects/universal-updater/src/cli.ts).
+Both point to [`dist/cli.js`](dist/cli.js), built from [`src/cli.ts`](src/cli.ts).
 
 ### 3.2 Command Signature
 ```bash
@@ -56,14 +56,14 @@ uup [options]
 
 ## 4. Data Models & Type Signatures
 
-All core interfaces are defined in [`src/types.ts`](file:///Volumes/DahchDev/projects/universal-updater/src/types.ts).
+All core interfaces are defined in [`src/types.ts`](src/types.ts).
 
 ### 4.1 Manager Categories
 ```typescript
 export type ManagerCategory = 'system' | 'runtime' | 'language' | 'appstore';
 ```
 
-### 4.2 Outdated Package Item ([`UpdateItem`](file:///Volumes/DahchDev/projects/universal-updater/src/types.ts#L3-L11))
+### 4.2 Outdated Package Item ([`UpdateItem`](src/types.ts#L3-L11))
 Represents a single package identified as needing an upgrade:
 ```typescript
 export interface UpdateItem {
@@ -77,7 +77,7 @@ export interface UpdateItem {
 }
 ```
 
-### 4.3 Scan Results ([`CheckResult`](file:///Volumes/DahchDev/projects/universal-updater/src/types.ts#L18-L28))
+### 4.3 Scan Results ([`CheckResult`](src/types.ts#L18-L28))
 The output produced by a package manager's check phase:
 ```typescript
 export interface CheckResult {
@@ -93,7 +93,7 @@ export interface CheckResult {
 }
 ```
 
-### 4.4 Execution Steps ([`UpdateStep`](file:///Volumes/DahchDev/projects/universal-updater/src/types.ts#L30-L36))
+### 4.4 Execution Steps ([`UpdateStep`](src/types.ts#L30-L36))
 Represents an atomic command executed during the update lifecycle:
 ```typescript
 export interface UpdateStep {
@@ -105,7 +105,20 @@ export interface UpdateStep {
 }
 ```
 
-### 4.5 Execution Output ([`UpdateExecutionResult`](file:///Volumes/DahchDev/projects/universal-updater/src/types.ts#L47-L56))
+### 4.5 Execution Options ([`ExecutionOptions`](src/types.ts#L38-L45))
+Runtime configuration and lifecycle event callbacks passed to `executeUpdate`:
+```typescript
+export interface ExecutionOptions {
+  dryRun?: boolean;
+  verbose?: boolean;
+  timeoutMs?: number;
+  onStepStart?: (step: string) => void;
+  onStepProgress?: (step: string, logLine: string) => void;
+  onStepEnd?: (step: string, success: boolean, error?: string, durationMs?: number) => void;
+}
+```
+
+### 4.6 Execution Output ([`UpdateExecutionResult`](src/types.ts#L47-L56))
 Aggregated execution result for a single package manager:
 ```typescript
 export interface UpdateExecutionResult {
@@ -120,8 +133,8 @@ export interface UpdateExecutionResult {
 }
 ```
 
-### 4.6 Global Summary ([`GlobalSummary`](file:///Volumes/DahchDev/projects/universal-updater/src/types.ts#L69-L79))
-Global metrics returned by [`UpdaterEngine.execute()`](file:///Volumes/DahchDev/projects/universal-updater/src/core/engine.ts#L101):
+### 4.7 Global Summary ([`GlobalSummary`](src/types.ts#L69-L79))
+Global metrics returned by [`UpdaterEngine.execute()`](src/core/engine.ts#L101):
 ```typescript
 export interface GlobalSummary {
   scannedManagersCount: number;
@@ -136,7 +149,7 @@ export interface GlobalSummary {
 }
 ```
 
-### 4.7 Package Manager Contract ([`PackageManager`](file:///Volumes/DahchDev/projects/universal-updater/src/types.ts#L58-L67))
+### 4.8 Package Manager Contract ([`PackageManager`](src/types.ts#L58-L67))
 ```typescript
 export interface PackageManager {
   readonly id: string;
@@ -155,7 +168,7 @@ export interface PackageManager {
 ## 5. Behavioral Specifications & Lifecycle
 
 ### 5.1 Stage 1: Discovery & Availability Detection
-1. **Parallel Pre-Flight Checks**: When [`UpdaterEngine.scan()`](file:///Volumes/DahchDev/projects/universal-updater/src/core/engine.ts#L22) is invoked, `manager.isAvailable()` is evaluated concurrently for all candidate managers via `Promise.all`.
+1. **Parallel Pre-Flight Checks**: When [`UpdaterEngine.scan()`](src/core/engine.ts#L22) is invoked, `manager.isAvailable()` is evaluated concurrently for all candidate managers via `Promise.all`.
 2. **Error Isolation**: If `isAvailable()` throws an unexpected error, the manager is coerced to `available: false` without failing the scan.
 3. **Pre-Check Filters**:
    - `RubyGemManager`: Verifies `which gem`. If it resolves to `/usr/bin/gem` or starts with `/System/Library`, it returns `false` to avoid macOS SIP-protected legacy Ruby hangs.
@@ -178,7 +191,7 @@ export interface PackageManager {
 
 ### 5.3 Stage 3: Aggregation & Confirmation
 1. **Zero-Update Short-Circuit**: If `allUpdates.length === 0`, the CLI displays an up-to-date banner and exits immediately with code `0`.
-2. **Tabular Presentation**: Updates are formatted using `cli-table3` with custom box-drawing borders, showing Manager, Package, Type, Current Version (yellow), and Latest Version (green bold).
+2. **Tabular Presentation**: Updates are formatted using `cli-table3` with a minimalist micro-border layout, displaying 4 aligned columns: `Manager` (cyan), `Package` (bold white), `Type` (bracketed tag e.g. `[formula]`, `[global-pkg]`), and `Version Transition` (`currentVersion → latestVersion` with green bold target).
 3. **Confirmation Modes**:
    - `--dry-run`: Sets `dryRun: true`, auto-selects all managers with pending updates, and logs an informational simulation message.
    - `--yes`: Auto-selects all managers with pending updates and proceeds immediately.
@@ -189,7 +202,7 @@ export interface PackageManager {
 
 ### 5.4 Stage 4: Execution & Resilience Strategies
 1. **Sequential Execution**: Selected managers execute sequentially to avoid lockfile contention (e.g. brew locks, dpkg database locks).
-2. **Dry-Run Emulation**: When `options.dryRun` is `true`, [`BasePackageManager.executeStep()`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/base.ts#L31) prints `[DRY-RUN] Would run: <command>` and returns `status: 'success'` with `durationMs: 0` without invoking `safeExec`.
+2. **Dry-Run Emulation**: When `options.dryRun` is `true`, [`BasePackageManager.executeStep()`](src/managers/base.ts#L31) prints `[DRY-RUN] Would run: <command>` and returns `status: 'success'` with `durationMs: 0` without invoking `safeExec`.
 3. **Privilege Pre-Checks**:
    - `MacPortsManager` and `AptManager` run `sudo -n true` (timeout: 3,000ms) before executing privileged operations. If non-interactive sudo is unavailable, they fail fast with clear instructions (`Run "sudo -v" before uup`) instead of hanging the process.
 4. **Major Semver Upgrades (Bun & Yarn)**:
@@ -198,20 +211,28 @@ export interface PackageManager {
 5. **Bun Homebrew Coexistence**:
    - `BunManager` checks `which bun`. If located in `/opt/homebrew` or `/Cellar`, `bun upgrade` is skipped (or marked skipped if attempted) to avoid corrupting Homebrew formula linkages.
 6. **npm Multi-Tier Resilient Strategy**:
-   - `NpmManager` targets outdated packages directly via `npm install -g --legacy-peer-deps <pkg>@<version>`.
+   - `NpmManager` targets outdated packages directly via `npm install -g --legacy-peer-deps -- <pkg>@<version>`. If only 1 package is outdated, it proceeds directly to isolated installation without a redundant batch step.
+   - All package targets are separated with POSIX `--` delimiter to protect against argument/flag confusion.
    - If batch installation fails (e.g. peer dependency resolution conflicts across packages), it automatically falls back to isolated per-package installation so that problematic packages do not block valid packages.
-   - If an individual package installation fails due to install script failures (such as package-manager enforce scripts like `npx only-allow pnpm`), it retries once with `--ignore-scripts`.
-   - Batch fallback trigger steps are not counted as package failures when subsequent per-package steps succeed.
+   - If an individual package installation fails due to install script failures (such as package-manager enforce scripts like `npx only-allow pnpm`), it retries once with `--ignore-scripts -- <pkg>@<version>`.
+   - Batch fallback trigger steps are recorded with `status: 'skipped'` and are not counted as package failures when subsequent per-package steps succeed.
 7. **Sanitized Error Extraction**:
-   - Error message reporting uses `extractErrorMessage()` to filter out ambient warnings (`npm warn`, `warning:`, `notice`) from stderr, surfacing only actionable error statements to avoid misleading diagnostics.
+   - Error message reporting uses `extractErrorMessage()` to filter out ambient warnings (`npm warn`, `warning:`, `notice`) and ANSI sequences from stderr, surfacing only actionable error statements to avoid misleading diagnostics.
+8. **Homebrew Non-Redundant Targeted Upgrade**:
+   - `HomebrewManager` inspects the classification of outdated items (`formula` vs `cask`).
+   - If only casks are pending (`hasCasks && !hasFormulae`), it executes targeted `brew upgrade --cask` (bypassing slow formula dependency graph evaluations).
+   - If only formulae are pending (`hasFormulae && !hasCasks`), it executes targeted `brew upgrade --formula` (bypassing cask checks).
+   - If both categories (or unclassified packages) are pending, it executes full `brew upgrade`.
+   - In all scenarios, `brew update` executes prior to upgrading, and `brew cleanup` executes afterwards.
+   - The reported `updatedCount` accurately reflects package counts only when the upgrade step succeeds (`upgradeSucceeded ? items.length : 0`).
 
 ---
 
 ## 6. Non-Functional Requirements
 
 1. **Safety**: Commands are spawned with non-interactive flags (`CI=true`, `DEBIAN_FRONTEND=noninteractive`, `stdin: 'ignore'`). Commands must never block indefinitely waiting for user TTY input.
-2. **Observability**: Subprocess output is captured via line-by-line streaming. Spinners and progress reporters display live elapsed time and persistent completion markers per step.
+2. **Observability**: Subprocess output is captured via line-by-line streaming. Spinners display real-time live activity, and completed steps are printed as persistent terminal lines with execution durations (`✔ step [duration]`).
 3. **Execution Safety**: All execution steps default to a 180-second timeout per command (`options.timeoutMs ?? 180000`).
 4. **Idempotence**: Running `uup` repeatedly on an already updated system performs a non-destructive read-only check and exits cleanly.
-5. **Minimalist Aesthetic**: Tabular updates and execution feedback emphasize clean typography, subtle borders, high contrast indicators, and persistent status lines.
+5. **Minimalist Aesthetic**: Tabular updates and execution feedback emphasize clean typography, subtle micro-borders, high contrast indicators, persistent step lines, and actionable sanitized errors (`extractErrorMessage()`).
 

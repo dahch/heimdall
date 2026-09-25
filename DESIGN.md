@@ -4,7 +4,7 @@
 
 Universal Updater is architected around four core design tenets:
 
-1. **Provider / Adapter Pattern**: Each package manager is implemented as an autonomous adapter conforming to a unified [`PackageManager`](file:///Volumes/DahchDev/projects/universal-updater/src/types.ts#L58-L67) interface. High-level orchestrators never interact with manager-specific CLI syntax directly.
+1. **Provider / Adapter Pattern**: Each package manager is implemented as an autonomous adapter conforming to a unified [`PackageManager`](src/types.ts#L58-L67) interface. High-level orchestrators never interact with manager-specific CLI syntax directly.
 2. **Resilience First (Fault Isolation)**: No single tool failure, command timeout, missing binary, or network disruption can crash the engine. All checks and execution steps run inside defensive try/catch wrappers that produce structured error states instead of unhandled rejections.
 3. **Two-Phase Lifecycle**: Mutative operations are strictly decoupled from inspection:
    - **Phase 1 (Inspection)**: Read-only, highly concurrent discovery and outdated analysis.
@@ -39,7 +39,7 @@ flowchart TD
     subgraph Phase1_Review ["Interactive Review & Decision Gate"]
         AggUpdates --> ZeroCheck{"Any updates pending?"}
         ZeroCheck -- "No (0 updates)" --> ExitClean(["Display 'Up to Date' & Exit (0)"])
-        ZeroCheck -- "Yes (>0 updates)" --> RenderTable["Render Colorized Diff Table\n(cli-table3)"]
+        ZeroCheck -- "Yes (>0 updates)" --> RenderTable["Render Minimalist Micro-Border Table\n(Manager, Package, Type, Current → Latest)"]
         RenderTable --> ConfirmGate{"Confirmation Mode"}
         ConfirmGate -- "--dry-run" --> SetDryRun["Select All (dryRun = true)"]
         ConfirmGate -- "--yes" --> SetYes["Select All (dryRun = false)"]
@@ -58,9 +58,12 @@ flowchart TD
         StepExec --> DryBranch{"Is dryRun?"}
         DryBranch -- "Yes" --> SimStep["Log [DRY-RUN] & Return Simulated Success"]
         DryBranch -- "No" --> SafeExecCmd["safeExec() via execa\n(CI=true, stream output, 180s timeout)"]
-        SafeExecCmd --> StepDone["Record Step Status"]
+        SafeExecCmd --> StepEval{"Step exitCode == 0?"}
+        StepEval -- "Yes" --> StepDone["Record Step Status ('success')"]
+        StepEval -- "No" --> ErrExtract["extractErrorMessage(rawStderr)\n(Strip warnings, isolate cause)"] --> StepFailDone["Record Step Status ('failed')"]
         SimStep --> StepDone
-        StepDone --> MoreSteps{"More steps?"}
+        StepDone & StepFailDone --> LiveProgress["onStepEnd: Print persistent marker\n✔ / ✖ stepName [durationMs]"]
+        LiveProgress --> MoreSteps{"More steps?"}
         MoreSteps -- "Yes" --> ExecRoutine
         MoreSteps -- "No" --> ManagerDone["Record Manager Execution Result"]
         ManagerDone --> MoreManagers{"More managers?"}
@@ -82,7 +85,7 @@ flowchart TD
 
 During the check phase, querying all package managers sequentially would incur substantial latency, while unbounded `Promise.all` can saturate CPU, network sockets, or file descriptors.
 
-[`UpdaterEngine.scan()`](file:///Volumes/DahchDev/projects/universal-updater/src/core/engine.ts#L50-L84) employs a **bounded worker pool pattern**:
+[`UpdaterEngine.scan()`](src/core/engine.ts#L50-L84) employs a **bounded worker pool pattern**:
 
 ```mermaid
 sequenceDiagram
@@ -135,7 +138,7 @@ sequenceDiagram
 
 ## 4. Provider Hierarchy & Class Relationships
 
-All package managers inherit from the abstract [`BasePackageManager`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/base.ts#L13), providing a uniform template method for step execution, logging, and error tracking:
+All package managers inherit from the abstract [`BasePackageManager`](src/managers/base.ts#L13), providing a uniform template method for step execution, logging, and error tracking:
 
 ```mermaid
 classDiagram
@@ -179,13 +182,14 @@ classDiagram
     BasePackageManager <|-- MacAppStoreManager : appstore
 ```
 
-### Responsibilities of [`BasePackageManager`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/base.ts):
+### Responsibilities of [`BasePackageManager`](src/managers/base.ts):
 - **Availability Default**: Implements `isAvailable()` by invoking `commandExists(this.binary)` using system `which`. Concrete classes override this when additional path validation is required (e.g. `RubyGemManager` skips `/usr/bin/gem`, `CargoManager` checks both `cargo` and `rustup`).
-- **Standardized Step Execution ([`executeStep`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/base.ts#L31))**:
+- **Standardized Step Execution ([`executeStep`](src/managers/base.ts#L31))**:
   - Intercepts `options.dryRun` to prevent subprocess execution while providing simulated console feedback.
-  - Spawns commands via [`safeExec`](file:///Volumes/DahchDev/projects/universal-updater/src/utils/exec.ts#L40) with default 180s timeouts.
-  - Emits real-time progress callbacks (`onStepStart`, `onStepProgress`, `onStepEnd`).
-  - Records step status, timing, and failure messages.
+  - Spawns commands via [`safeExec`](src/utils/exec.ts#L40) with default 180s timeouts.
+  - Emits real-time progress callbacks (`onStepStart`, `onStepProgress`, `onStepEnd(step, success, error, durationMs)`).
+  - Sanitizes step failure messages using [`extractErrorMessage`](src/utils/formatting.ts#L6) before recording step error.
+  - Records step status, timing, and actionable failure messages.
 
 ---
 
@@ -198,7 +202,7 @@ flowchart LR
     StepStart(["executeStep(name, file, args)"]) --> DryCheck{"options.dryRun?"}
 
     DryCheck -- "true" --> DryLog["onStepProgress: [DRY-RUN] Would run..."]
-    DryLog --> DryEnd["onStepEnd(true)"]
+    DryLog --> DryEnd["onStepEnd(true, duration: 0ms)"]
     DryEnd --> DryReturn["Return UpdateStep\n(status: 'success', duration: 0ms)"]
 
     DryCheck -- "false" --> SafeExecCall["safeExec(file, args, options)"]
@@ -211,10 +215,10 @@ flowchart LR
     ResultEval -- "Yes" --> StepSuccess["Status: 'success'"]
     ResultEval -- "No" --> TimeoutCheck{"result.timedOut?"}
     TimeoutCheck -- "Yes" --> TimedOutErr["Error: 'Step timed out after Ns'"]
-    TimeoutCheck -- "No" --> StdErr["Error: stderr || stdout || 'Command exited with error'"]
-    TimedOutErr & StdErr --> StepFail["Status: 'failed'"]
+    TimeoutCheck -- "No" --> ExtractErr["extractErrorMessage(rawOutput)\n(Filter npm warn, isolate errors)"]
+    TimedOutErr & ExtractErr --> StepFail["Status: 'failed'"]
 
-    StepSuccess & StepFail --> CallbackEnd["onStepEnd(status == 'success', error)"]
+    StepSuccess & StepFail --> CallbackEnd["onStepEnd(name, success, errorMsg, durationMs)"]
     CallbackEnd --> ReturnStep["Return UpdateStep\n(duration, status, error)"]
 ```
 
@@ -222,5 +226,32 @@ flowchart LR
 1. **MacPorts & APT Non-Interactive Sudo**: Before attempting `sudo port` or `sudo apt-get`, managers test credentials via `sudo -n true`. If cached privileges have expired, they fail immediately with actionable user advice, avoiding a 3-minute freeze.
 2. **Bun & Yarn Global Semver Override**: Standard `bun update -g` and `yarn global upgrade` obey version ranges stored in their global manifest files, ignoring newer major releases. Both managers prepend explicit `add -g <pkg>@latest` steps to force upgrades across major semver boundaries.
 3. **Bun Coexistence with Homebrew**: Calling `bun upgrade` when Bun was installed via Homebrew produces errors or broken symlinks. `BunManager` inspects `which bun` and skips self-upgrade if managed by Homebrew.
-4. **npm Monolithic vs. Fallback Isolation**: If `npm update -g --legacy-peer-deps` fails due to conflicting peer dependencies in an obscure global package, `NpmManager` automatically switches to updating packages individually, ensuring viable updates are applied.
+4. **npm Targeted Batching, Multi-Tier Fallback & Script Recovery**: `NpmManager` targets outdated packages directly via `npm install -g --legacy-peer-deps -- <pkg>@<latest>...`. Package targets use POSIX `--` separation to avoid colliding with CLI flags. If only 1 package is outdated, it proceeds straight to isolated install; if a batch install fails (e.g. peer conflicts), the batch step is marked `status = 'skipped'` (fallback trigger) and it falls back to isolated per-package installation. If an individual package fails due to install lifecycle scripts (`only-allow pnpm`, `node-gyp`), it automatically retries with `--ignore-scripts -- <target>`.
 5. **Native HTTP Registry Lookups (Yarn & Pipx)**: Rather than spawning hundreds of `npm view` or `pip index` sub-processes, Yarn and pipx make concurrent HTTP `fetch` requests directly to `registry.npmjs.org` and `pypi.org` with 3-second abort signals.
+6. **Homebrew Non-Redundant Targeted Upgrades**: `HomebrewManager` inspects pending item classifications. If only casks are pending, it runs `brew upgrade --cask` (bypassing formula graph resolution). If only formulae are pending, it runs `brew upgrade --formula`. If both are pending, it runs `brew upgrade`.
+7. **Sanitized Error Extraction**: Raw stderr and stdout often contain non-fatal runtime warnings (`npm warn`, `warning:`, `notice`) or truncated JSON dumps that mask the actual failure. `extractErrorMessage()` filters ambient notices, extracts specific error lines (`npm error`, `fatal:`, `command failed`), and cleanly truncates output for compact display.
+
+---
+
+## 6. UI/UX & Live Feedback Architecture
+
+The CLI presentation layer balances minimalist aesthetics with high information density:
+
+```mermaid
+flowchart TD
+    subgraph UI_Components ["UI Components (src/utils/formatting.ts & src/cli.ts)"]
+        HeaderBanner["Intro Banner\n● uup v1.0.0 — Universal System Updater"]
+        DiffTable["Micro-Border Pending Updates Table\n(Manager • Package • [Type] • Current → Latest)"]
+        LiveStep["Persistent Live Step Feedback\n✔ / ✖ Step Name [durationMs] ↳ Error"]
+        SummaryCard["Dual-Counter Execution Summary\n(Updated vs Issues per manager & Global totals)"]
+    end
+
+    HeaderBanner --> DiffTable
+    DiffTable --> LiveStep
+    LiveStep --> SummaryCard
+```
+
+1. **Micro-Border Alignment**: The pending updates table replaces heavy double-line ASCII boxes with subtle micro-borders and combines version columns into a directional transition (`currentVersion → latestVersion`).
+2. **Persistent Step Logging**: Instead of an ephemeral spinner that wipes previous step records, `onStepEnd` terminates the active spinner line with a permanent status mark (`✔ brew update [1.2s]`), then immediately restarts the spinner for subsequent tasks.
+3. **Fallback Concealment**: Intermediate fallback trigger steps (such as the initial npm batch step that fell back to per-package installs) are marked `status: 'skipped'` and suppressed in the final summary card so users only see actionable results.
+4. **Dual-Counter Accounting**: Execution summaries explicitly distinguish between successfully updated packages and encountered issues (`• 5 updated, 1 issue(s)`), providing exact clarity.

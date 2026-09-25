@@ -31,23 +31,23 @@ Each manager exhibits drastically different characteristics:
 Hardcoding update workflows into a central procedural script would lead to tightly coupled, brittle spaghetti code that is difficult to test, maintain, or extend.
 
 ### Decision
-We adopted an object-oriented **Provider / Adapter Pattern** anchored by an abstract base class [`BasePackageManager`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/base.ts#L13) implementing the [`PackageManager`](file:///Volumes/DahchDev/projects/universal-updater/src/types.ts#L58-L67) interface.
+We adopted an object-oriented **Provider / Adapter Pattern** anchored by an abstract base class [`BasePackageManager`](src/managers/base.ts#L13) implementing the [`PackageManager`](src/types.ts#L58-L67) interface.
 
 Key elements of this architecture include:
 1. **Uniform Lifecycle Contract**:
    - `isAvailable(): Promise<boolean>`: Non-throwing discovery check.
-   - `checkUpdates(options?: CheckOptions): Promise<CheckResult>`: Read-only scan returning normalized [`UpdateItem`](file:///Volumes/DahchDev/projects/universal-updater/src/types.ts#L3-L11) records.
+   - `checkUpdates(options?: CheckOptions): Promise<CheckResult>`: Read-only scan returning normalized [`UpdateItem`](src/types.ts#L3-L11) records.
    - `executeUpdate(items: UpdateItem[], options: ExecutionOptions): Promise<UpdateExecutionResult>`: Execution routine returning detailed step metrics.
 2. **Template Method for Step Execution**:
-   - [`BasePackageManager.executeStep()`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/base.ts#L31) encapsulates subprocess timeouts (default 180s), stdout/stderr streaming callbacks, and dry-run branching across all adapters.
+   - [`BasePackageManager.executeStep()`](src/managers/base.ts#L31) encapsulates subprocess timeouts (default 180s), stdout/stderr streaming callbacks, and dry-run branching across all adapters.
 3. **Registry & Filtering Decoupling**:
-   - Managers are instantiated in [`src/managers/registry.ts`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/registry.ts) via `createDefaultManagers()` and filtered by ID/name via `filterManagers()`. The core [`UpdaterEngine`](file:///Volumes/DahchDev/projects/universal-updater/src/core/engine.ts#L15) operates strictly against `PackageManager[]`.
+   - Managers are instantiated in [`src/managers/registry.ts`](src/managers/registry.ts) via `createDefaultManagers()` and filtered by ID/name via `filterManagers()`. The core [`UpdaterEngine`](src/core/engine.ts#L15) operates strictly against `PackageManager[]`.
 
 ### Consequences
 
 #### Positive:
 - **High Cohesion & Extensibility**: Adding a new package manager requires only subclassing `BasePackageManager` and registering it in `registry.ts`. Core engine code remains untouched (Open/Closed Principle).
-- **Isolated Unit Testing**: Each adapter's parsing and execution routine can be unit tested in complete isolation using Vitest mocks without invoking external system binaries (see [`tests/managers.test.ts`](file:///Volumes/DahchDev/projects/universal-updater/tests/managers.test.ts)).
+- **Isolated Unit Testing**: Each adapter's parsing and execution routine can be unit tested in complete isolation using Vitest mocks without invoking external system binaries (see [`tests/managers.test.ts`](tests/managers.test.ts)).
 - **Consistent Dry-Run Semantics**: Because dry-run logic is handled inside `BasePackageManager.executeStep()`, all adapters automatically inherit mock execution without duplicate boilerplate.
 
 #### Negative / Trade-offs:
@@ -75,7 +75,7 @@ When invoking standard global update commands:
 Both package managers intentionally refuse to upgrade packages across major version boundaries (e.g. ESLint `8.57.0` -> `9.0.0`), reporting them as "up to date" or ignoring the newer major version. In an administrative updater whose purpose is to bring all tools to their newest release, this leaves global tooling silently outdated.
 
 ### Decision
-In [`BunManager`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/bun.ts#L104-L121) and [`YarnManager`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/yarn.ts#L113-L128), we structure the execution phase into a multi-step routine:
+In [`BunManager`](src/managers/bun.ts#L104-L121) and [`YarnManager`](src/managers/yarn.ts#L113-L128), we structure the execution phase into a multi-step routine:
 
 1. **Step 1 (Explicit Latest Pinning)**: For every outdated package identified during the check phase, construct explicit `@<latest>` targets and execute:
    - Bun: `bun add -g <pkg1>@<latest> <pkg2>@<latest> ...`
@@ -113,7 +113,7 @@ On macOS 10.15 (Catalina) and later:
 4. **Apple Deprecation Notice**: Apple has officially marked built-in scripting runtimes as deprecated and unmaintained for user workloads.
 
 ### Decision
-In [`RubyGemManager.isAvailable()`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/gem.ts#L20-L33), we inspect the absolute binary path using `which gem`:
+In [`RubyGemManager.isAvailable()`](src/managers/gem.ts#L20-L33), we inspect the absolute binary path using `which gem`:
 
 ```typescript
 const whichRes = await safeExec('which', ['gem'], { timeoutMs: 3000 });
@@ -159,10 +159,10 @@ On developer machines with 20+ global Yarn packages or 15+ pipx CLI tools, spawn
 ### Decision
 We replaced CLI child process spawning with **direct HTTP queries to public registry JSON endpoints** using Node's built-in `fetch` and `AbortSignal.timeout(3000)`:
 
-1. **Yarn Global Packages** ([`src/managers/yarn.ts`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/yarn.ts#L53-L81)):
+1. **Yarn Global Packages** ([`src/managers/yarn.ts`](src/managers/yarn.ts#L53-L81)):
    - Query endpoint: `https://registry.npmjs.org/<pkg>/latest`
    - Scoped packages (e.g. `@angular/cli`) are URL-encoded (`%40angular/cli`).
-2. **pipx Applications** ([`src/managers/pipx.ts`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/pipx.ts#L56-L84)):
+2. **pipx Applications** ([`src/managers/pipx.ts`](src/managers/pipx.ts#L56-L84)):
    - Query endpoint: `https://pypi.org/pypi/<pkg>/json`
    - Version extraction: `data.info.version`.
 
@@ -186,11 +186,12 @@ All package queries are dispatched in parallel via `Promise.all` with a strict 3
 - **Status**: Accepted
 - **Context**: In environments with numerous global npm packages, executing monolithic `npm update -g --legacy-peer-deps` frequently takes ~60 seconds and fails completely if ANY global package encounters peer dependency resolution errors, engine warnings, or broken preinstall scripts (e.g. `npx only-allow pnpm` inside transitive dependencies like `ip-set` in `torlnk`). Furthermore, standard stderr output includes non-fatal `npm warn` notices that obscure the actual error cause when reported to users.
 - **Decision**:
-  1. `NpmManager` executes targeted installations for only the packages identified during `checkUpdates()`: `npm install -g --legacy-peer-deps <pkg>@<latest>`.
-  2. If batch installation fails, it seamlessly falls back to isolated per-package installation.
-  3. If an individual package install fails with a script error, it retries once with `--ignore-scripts` to bypass non-essential scripts (such as package manager enforcement hooks).
-  4. The initial batch failure is treated as a fallback trigger rather than counting as failed package steps if fallback resolves packages.
-  5. Error output is filtered through a dedicated `extractErrorMessage()` utility that filters out `npm warn`/`warning:` lines and extracts genuine error lines.
+  1. `NpmManager` executes targeted installations for only the packages identified during `checkUpdates()`: `npm install -g --legacy-peer-deps -- <pkg>@<latest>`. If multiple packages are pending, it runs targeted batch installation; if only 1 package is pending, it executes isolated installation directly.
+  2. Targets are delimited using POSIX `--` argument separation to prevent package specifiers or scoped packages from colliding with npm CLI options.
+  3. If batch installation fails, it seamlessly falls back to isolated per-package installation.
+  4. If an individual package install fails with a script error, it retries once with `--ignore-scripts -- <target>` to bypass non-essential scripts (such as package manager enforcement hooks).
+  5. The initial batch failure is treated as a fallback trigger (`status: 'skipped'`) rather than counting as failed package steps if fallback resolves packages.
+  6. Error output is filtered through a dedicated `extractErrorMessage()` utility that filters out `npm warn`/`warning:` lines and extracts genuine error lines.
 - **Consequences**:
   - Positive: Execution time drops by up to 90% (from ~64s to <5s). Resilient recovery from install-script failures (e.g. `torlnk`). Clean, actionable error reporting without truncated warning brackets.
   - Trade-off: `--ignore-scripts` is only applied as a last-resort fallback for individual packages when the initial install fails.
@@ -209,4 +210,21 @@ All package queries are dispatched in parallel via `Promise.all` with a strict 3
 - **Consequences**:
   - Positive: Drastically improved legibility, modern aesthetic comparable to modern developer tooling (Vite, Bun, Turborepo), zero flickering, and crystal-clear feedback at every step.
   - Trade-off: Requires custom formatting utilities alongside `cli-table3` configuration.
+
+---
+
+## ADR-007: Homebrew Non-Redundant Targeted Upgrade by Package Classification
+
+- **Status**: Accepted
+- **Context**: In macOS environments using Homebrew, `brew upgrade` updates both formulae and casks, while `brew upgrade --cask` updates only casks. Executing `brew upgrade` followed unconditionally by `brew upgrade --cask` is redundant and wasteful when only one category has pending updates. When only GUI casks (e.g. Raycast, Docker) require updates, running a full `brew upgrade` forces Homebrew to unnecessarily traverse formula dependency graphs and evaluate bottled formulas, adding 15–45 seconds of needless overhead.
+- **Decision**:
+  1. `HomebrewManager` inspects the classification (`type === 'cask'` vs `type === 'formula'`) of outdated items detected during `checkUpdates()`.
+  2. If only casks are pending (`hasCasks && !hasFormulae`), it executes targeted `brew upgrade --cask`.
+  3. If only formulae are pending (`hasFormulae && !hasCasks`), it executes targeted `brew upgrade --formula`.
+  4. If both categories (or unclassified packages) are pending, it falls back to full `brew upgrade`.
+  5. Both paths run `brew update` beforehand and `brew cleanup` afterwards.
+  6. The `updatedCount` metric accurately reflects package updates only when the actual upgrade step succeeds (`upgradeSucceeded ? items.length : 0`).
+- **Consequences**:
+  - Positive: Eliminates redundant upgrade passes, significantly shortening execution times when updating only casks or only formulae.
+  - Trade-off: None; formula and cask classifications are reliably provided by `brew outdated --json=v2`.
 

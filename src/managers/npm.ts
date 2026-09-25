@@ -105,32 +105,40 @@ export class NpmManager extends BasePackageManager {
       };
     }
 
-    // Step 1: Attempt targeted batch install with --legacy-peer-deps
-    const targets = items.map((i) =>
-      i.latestVersion && i.latestVersion !== 'unknown' ? `${i.name}@${i.latestVersion}` : `${i.name}@latest`
-    );
+    // Step 1: Attempt targeted batch install only if multiple packages are outdated.
+    // If only 1 package is outdated, proceed directly to isolated install to avoid duplicate execution.
+    let runIsolatedFallback = true;
 
-    const batchStep = await this.executeStep(
-      `npm install -g --legacy-peer-deps (${items.length} pkgs)`,
-      'npm',
-      ['install', '-g', '--legacy-peer-deps', ...targets],
-      options
-    );
-
-    if (batchStep.status === 'success') {
-      steps.push(batchStep);
-      updatedCount = items.length;
-    } else {
-      // Step 2: Batch hit conflicts. Mark batch step as skipped (fallback trigger)
-      // so it does not count as a package failure when individual installs succeed.
-      batchStep.status = 'skipped';
-      steps.push(batchStep);
-
-      options.onStepProgress?.(
-        'npm install',
-        'Batch install hit conflicts; falling back to per-package isolated installs...'
+    if (items.length > 1) {
+      const targets = items.map((i) =>
+        i.latestVersion && i.latestVersion !== 'unknown' ? `${i.name}@${i.latestVersion}` : `${i.name}@latest`
       );
 
+      const batchStep = await this.executeStep(
+        `npm install -g --legacy-peer-deps (${items.length} pkgs)`,
+        'npm',
+        ['install', '-g', '--legacy-peer-deps', '--', ...targets],
+        options
+      );
+
+      if (batchStep.status === 'success') {
+        steps.push(batchStep);
+        updatedCount = items.length;
+        runIsolatedFallback = false;
+      } else {
+        // Batch hit conflicts. Mark batch step as skipped (fallback trigger)
+        // so it does not count as a package failure when individual installs succeed.
+        batchStep.status = 'skipped';
+        steps.push(batchStep);
+
+        options.onStepProgress?.(
+          'npm install',
+          'Batch install hit conflicts; falling back to per-package isolated installs...'
+        );
+      }
+    }
+
+    if (runIsolatedFallback) {
       for (const item of items) {
         const pkgTarget =
           item.latestVersion && item.latestVersion !== 'unknown'
@@ -140,7 +148,7 @@ export class NpmManager extends BasePackageManager {
         const itemStep = await this.executeStep(
           `npm install -g ${item.name}`,
           'npm',
-          ['install', '-g', '--legacy-peer-deps', pkgTarget],
+          ['install', '-g', '--legacy-peer-deps', '--', pkgTarget],
           options
         );
 
@@ -168,7 +176,7 @@ export class NpmManager extends BasePackageManager {
             const retryStep = await this.executeStep(
               `npm install -g ${item.name} (--ignore-scripts)`,
               'npm',
-              ['install', '-g', '--legacy-peer-deps', '--ignore-scripts', pkgTarget],
+              ['install', '-g', '--legacy-peer-deps', '--ignore-scripts', '--', pkgTarget],
               options
             );
 

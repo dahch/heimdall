@@ -200,7 +200,7 @@ describe('Package Managers Outdated Parsers', () => {
       expect(result.success).toBe(true);
       expect(result.updatedCount).toBe(2);
       expect(executedCommands).toEqual([
-        'npm install -g --legacy-peer-deps typescript@5.4.0 prettier@3.2.0',
+        'npm install -g --legacy-peer-deps -- typescript@5.4.0 prettier@3.2.0',
       ]);
     });
 
@@ -217,12 +217,12 @@ describe('Package Managers Outdated Parsers', () => {
         }
 
         // typescript isolated succeeds
-        if (full === 'npm install -g --legacy-peer-deps typescript@5.4.0') {
+        if (full === 'npm install -g --legacy-peer-deps -- typescript@5.4.0') {
           return { stdout: 'added 1 package', stderr: '', exitCode: 0, success: true, timedOut: false };
         }
 
         // torlnk without --ignore-scripts fails with script error (only-allow pnpm)
-        if (full === 'npm install -g --legacy-peer-deps torlnk@1.0.1') {
+        if (full === 'npm install -g --legacy-peer-deps -- torlnk@1.0.1') {
           return {
             stdout: '',
             stderr: 'npm error code 1\nnpm error command failed\nnpm error command sh -c npx only-allow pnpm',
@@ -233,7 +233,7 @@ describe('Package Managers Outdated Parsers', () => {
         }
 
         // torlnk retry with --ignore-scripts succeeds!
-        if (full === 'npm install -g --legacy-peer-deps --ignore-scripts torlnk@1.0.1') {
+        if (full === 'npm install -g --legacy-peer-deps --ignore-scripts -- torlnk@1.0.1') {
           return { stdout: 'added 1 package', stderr: '', exitCode: 0, success: true, timedOut: false };
         }
 
@@ -249,7 +249,7 @@ describe('Package Managers Outdated Parsers', () => {
       expect(result.success).toBe(true);
       expect(result.updatedCount).toBe(2);
       expect(result.steps.find((s) => s.status === 'skipped')).toBeDefined();
-      expect(executedCommands).toContain('npm install -g --legacy-peer-deps --ignore-scripts torlnk@1.0.1');
+      expect(executedCommands).toContain('npm install -g --legacy-peer-deps --ignore-scripts -- torlnk@1.0.1');
     });
 
     it('accurately accounts for failures when package update fails', async () => {
@@ -656,6 +656,53 @@ Done in 0.02s.
       // The batch step should be recorded as 'skipped'
       const batchStep = result.steps.find((s) => s.name.includes('pkgs'));
       expect(batchStep?.status).toBe('skipped');
+    });
+
+    it('skips redundant batch step when updating a single package', async () => {
+      const manager = new NpmManager();
+      const execSpy = vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: 'changed 1 package in 1s',
+        stderr: '',
+        exitCode: 0,
+        success: true,
+        timedOut: false,
+      });
+
+      const result = await manager.executeUpdate(
+        [{ managerId: 'npm', managerName: 'npm (global)', name: 'torlnk', currentVersion: '1.8.0', latestVersion: '1.9.0', type: 'global-pkg' }],
+        { dryRun: false }
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(1);
+      expect(result.steps.some((s) => s.name.includes('pkgs'))).toBe(false);
+      expect(execSpy).toHaveBeenCalledWith('npm', ['install', '-g', '--legacy-peer-deps', '--', 'torlnk@1.9.0'], expect.any(Object));
+    });
+  });
+
+  describe('HomebrewManager check failures and empty guards', () => {
+    it('returns error in checkUpdates when brew outdated command fails', async () => {
+      const manager = new HomebrewManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: '',
+        stderr: 'Error: Failed to connect to github.com',
+        exitCode: 1,
+        success: false,
+        timedOut: false,
+      });
+
+      const result = await manager.checkUpdates();
+      expect(result.updates).toHaveLength(0);
+      expect(result.error).toContain('Failed to connect');
+    });
+
+    it('returns immediate success with 0 items in executeUpdate', async () => {
+      const manager = new HomebrewManager();
+      const result = await manager.executeUpdate([], { dryRun: false });
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(0);
+      expect(result.steps).toHaveLength(0);
     });
   });
 });

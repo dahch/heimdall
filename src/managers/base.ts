@@ -1,5 +1,5 @@
 import { commandExists, safeExec, type SafeExecOptions } from '../utils/exec.js';
-import { extractErrorMessage } from '../utils/formatting.js';
+import { extractErrorMessage } from '../utils/error.js';
 import type {
   PackageManager,
   ManagerCategory,
@@ -65,7 +65,7 @@ export abstract class BasePackageManager implements PackageManager {
 
     const durationMs = Date.now() - startTime;
     const success = result.success;
-    const rawOutput = (result.stderr || result.stdout || '').trim();
+    const rawOutput = [result.stderr, result.stdout].filter(Boolean).join('\n').trim();
     const errorMsg = !success
       ? (result.timedOut
           ? `Step timed out after ${Math.round((options.timeoutMs ?? 180000) / 1000)}s`

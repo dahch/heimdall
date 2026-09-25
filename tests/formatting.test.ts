@@ -31,6 +31,15 @@ describe('Formatting Utilities', () => {
       expect(extractErrorMessage(colored)).toBe('Error: something broke');
     });
 
+    it('returns default message when output contains only warnings', () => {
+      const warningOnly = `
+npm warn EBADENGINE Unsupported engine {
+npm warn deprecated request@2.88.2: request has been deprecated
+npm notice created a lockfile on package install
+      `;
+      expect(extractErrorMessage(warningOnly)).toBe('Command exited with error');
+    });
+
     it('filters out harmless npm warnings and extracts meaningful npm error', () => {
       const npmStderr = `
 npm warn EBADENGINE Unsupported engine {

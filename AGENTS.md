@@ -20,8 +20,8 @@ universal-updater/
 │   ├── managers/
 │   │   ├── base.ts           # Abstract BasePackageManager (executeStep, dry-run branching)
 │   │   ├── registry.ts       # Manager registry factory and include/exclude filtering
-│   │   ├── homebrew.ts       # Homebrew adapter (formulae, casks, cleanup)
-│   │   ├── npm.ts            # npm global adapter (legacy-peer-deps, major bump fallback)
+│   │   ├── homebrew.ts       # Homebrew adapter (selective formula/cask upgrade, cleanup)
+│   │   ├── npm.ts            # npm global adapter (targeted batch, isolated fallback, --ignore-scripts retry)
 │   │   ├── pnpm.ts           # pnpm global adapter
 │   │   ├── bun.ts            # Bun adapter (explicit add latest, Homebrew skip)
 │   │   ├── yarn.ts           # Yarn v1 global adapter (HTTP registry check, add latest)
@@ -34,10 +34,12 @@ universal-updater/
 │   │   └── linux.ts          # Linux APT and Flatpak adapters
 │   └── utils/
 │       ├── exec.ts           # safeExec wrapper around execa, commandExists
+│       ├── error.ts          # Clean actionable error extractor (extractErrorMessage)
 │       └── formatting.ts     # Duration formatting, cli-table3 and execution summary renderers
 ├── tests/
 │   ├── engine.test.ts        # Unit tests for UpdaterEngine, concurrency pool, and filters
 │   ├── exec.test.ts          # Unit tests for safeExec and commandExists
+│   ├── formatting.test.ts    # Unit tests for extractErrorMessage and rendering utilities
 │   └── managers.test.ts      # Unit tests for manager parsers, HTTP mocking, and fallback logic
 ├── package.json              # Binaries ("uup", "universal-updater"), dependencies, scripts
 ├── tsconfig.json             # ES2022, NodeNext module resolution, strict mode
@@ -52,21 +54,21 @@ When modifying or extending the codebase, you **MUST** uphold the following rule
 
 ### 3.1 Strict Non-Interactivity
 - Subprocesses spawned by `uup` must **NEVER** hang waiting for terminal input.
-- Always use [`safeExec`](file:///Volumes/DahchDev/projects/universal-updater/src/utils/exec.ts#L40) which automatically injects `CI=true`, `DEBIAN_FRONTEND=noninteractive`, and `stdin: 'ignore'`.
+- Always use [`safeExec`](src/utils/exec.ts#L40) which automatically injects `CI=true`, `DEBIAN_FRONTEND=noninteractive`, and `stdin: 'ignore'`.
 - If invoking commands that accept confirmation flags, explicitly pass `-y`, `--yes`, or `--noninteractive` (e.g. `apt-get -y`, `flatpak update -y`).
 
 ### 3.2 Never Leak Unhandled Rejections
 - Core operations must never throw uncaught errors.
-- Every manager's [`checkUpdates()`](file:///Volumes/DahchDev/projects/universal-updater/src/types.ts#L65) and [`executeUpdate()`](file:///Volumes/DahchDev/projects/universal-updater/src/types.ts#L66) must wrap calls in `try / catch` blocks and return structured failure objects (`available: false`, `success: false`, `error: string`).
-- In [`UpdaterEngine`](file:///Volumes/DahchDev/projects/universal-updater/src/core/engine.ts), individual manager errors are isolated so remaining managers complete unimpeded.
+- Every manager's [`checkUpdates()`](src/types.ts#L65) and [`executeUpdate()`](src/types.ts#L66) must wrap calls in `try / catch` blocks and return structured failure objects (`available: false`, `success: false`, `error: string`).
+- In [`UpdaterEngine`](src/core/engine.ts), individual manager errors are isolated so remaining managers complete unimpeded.
 
 ### 3.3 Strict Dry-Run Fidelity
-- All execution logic must route through [`BasePackageManager.executeStep()`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/base.ts#L31) or inspect `options.dryRun`.
+- All execution logic must route through [`BasePackageManager.executeStep()`](src/managers/base.ts#L31) or inspect `options.dryRun`.
 - When `options.dryRun` is `true`, no destructive shell commands may be executed. `executeStep` logs `[DRY-RUN] Would run: <command>` and returns `status: 'success'` with `durationMs: 0`.
 
 ### 3.4 Explicit Sudo Pre-Verification
 - Never invoke `sudo <command>` directly without verifying non-interactive privileges beforehand.
-- Follow the pattern established in [`MacPortsManager`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/macports.ts#L96-L117) and [`AptManager`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/linux.ts#L90-L111):
+- Follow the pattern established in [`MacPortsManager`](src/managers/macports.ts#L96-L117) and [`AptManager`](src/managers/linux.ts#L90-L111):
   ```typescript
   if (!options.dryRun && process.getuid?.() !== 0) {
     const sudoCheck = await safeExec('sudo', ['-n', 'true'], { timeoutMs: 3000 });
@@ -93,6 +95,14 @@ When modifying or extending the codebase, you **MUST** uphold the following rule
 - Both `bun update -g` and `yarn global upgrade` refuse to cross major SemVer boundaries due to internal `package.json` constraints.
 - You must prepend explicit `add -g <pkg>@latest` steps for outdated items before issuing general update commands (see [ADR 002](ADR.md#adr-002-bypassing-major-semver-range-restrictions-in-bun-and-yarn-global-packages)).
 
+### 3.7 Sanitized Error Extraction
+- Raw subprocess stderr output frequently contains ambient warnings (e.g. `npm warn EBADENGINE`), build notices, or truncated JSON brackets that obscure the underlying root cause.
+- All step error recording routes through [`extractErrorMessage()`](src/utils/formatting.ts#L6) inside `BasePackageManager.executeStep()`, guaranteeing clean, single-line actionable diagnostics.
+
+### 3.8 Distinguish Fallback Triggers from Real Failures
+- When a batch step fails and transparently triggers an isolated per-package fallback (such as in `NpmManager`), mark the batch step as `status: 'skipped'`.
+- This ensures that internal fallback triggers are suppressed from user summary cards and do not trigger false-positive manager failure states when subsequent per-package steps succeed.
+
 ---
 
 ## 4. How to Implement a New Package Manager
@@ -100,7 +110,7 @@ When modifying or extending the codebase, you **MUST** uphold the following rule
 Follow this step-by-step recipe to add a new package manager (e.g. `dnf`, `zypper`, `nix`):
 
 ### Step 1: Create the Manager Class
-Create `src/managers/<id>.ts` extending [`BasePackageManager`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/base.ts#L13):
+Create `src/managers/<id>.ts` extending [`BasePackageManager`](src/managers/base.ts#L13):
 
 ```typescript
 import { BasePackageManager } from './base.js';
@@ -203,7 +213,7 @@ export class ExampleManager extends BasePackageManager {
 ```
 
 ### Step 2: Register the Manager
-Register your new class in [`src/managers/registry.ts`](file:///Volumes/DahchDev/projects/universal-updater/src/managers/registry.ts):
+Register your new class in [`src/managers/registry.ts`](src/managers/registry.ts):
 ```typescript
 import { ExampleManager } from './example.js';
 
@@ -216,7 +226,7 @@ export function createDefaultManagers(): PackageManager[] {
 ```
 
 ### Step 3: Write Comprehensive Unit Tests
-Add parser and execution tests in [`tests/managers.test.ts`](file:///Volumes/DahchDev/projects/universal-updater/tests/managers.test.ts) using `vi.spyOn(execUtils, 'safeExec')` and `vi.spyOn(manager, 'isAvailable')`.
+Add parser and execution tests in [`tests/managers.test.ts`](tests/managers.test.ts) using `vi.spyOn(execUtils, 'safeExec')` and `vi.spyOn(manager, 'isAvailable')`.
 
 ### Step 4: Verify and Build
 Execute test and build suites:
@@ -236,6 +246,6 @@ pnpm build
 - `pnpm start`: Executes the compiled bundle (`node dist/cli.js`).
 
 ### Testing Conventions
-1. **Mocking Subprocesses**: Never allow unit tests to invoke live system binaries like `brew` or `apt`. Mock [`safeExec`](file:///Volumes/DahchDev/projects/universal-updater/src/utils/exec.ts#L40) using `vi.spyOn(execUtils, 'safeExec')`.
+1. **Mocking Subprocesses**: Never allow unit tests to invoke live system binaries like `brew` or `apt`. Mock [`safeExec`](src/utils/exec.ts#L40) using `vi.spyOn(execUtils, 'safeExec')`.
 2. **Mocking HTTP**: Mock global `fetch` using `vi.spyOn(globalThis, 'fetch')` and ensure `mockRestore()` is called after each test.
 3. **TypeScript Module Extensions**: Under `"moduleResolution": "NodeNext"`, all relative imports in TypeScript source files must end with the `.js` extension (e.g. `import { safeExec } from '../utils/exec.js';`).

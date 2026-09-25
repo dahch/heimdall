@@ -1,5 +1,6 @@
 import { BasePackageManager } from './base.js';
 import { safeExec } from '../utils/exec.js';
+import { extractErrorMessage } from '../utils/error.js';
 import type {
   ManagerCategory,
   CheckOptions,
@@ -56,9 +57,22 @@ export class HomebrewManager extends BasePackageManager {
         timeoutMs: options?.timeoutMs ?? 30000,
       });
 
+      if (!execRes.success) {
+        return {
+          managerId: this.id,
+          managerName: this.name,
+          icon: this.icon,
+          category: this.category,
+          available: true,
+          updates: [],
+          durationMs: Date.now() - startTime,
+          error: extractErrorMessage(execRes.stderr || execRes.stdout),
+        };
+      }
+
       const updates: UpdateItem[] = [];
 
-      if (execRes.success && execRes.stdout.trim()) {
+      if (execRes.stdout.trim()) {
         try {
           const parsed = JSON.parse(execRes.stdout) as BrewOutdatedJson;
 
@@ -139,6 +153,18 @@ export class HomebrewManager extends BasePackageManager {
   ): Promise<UpdateExecutionResult> {
     const startTime = Date.now();
     const steps: UpdateStep[] = [];
+
+    if (items.length === 0) {
+      return {
+        managerId: this.id,
+        managerName: this.name,
+        icon: this.icon,
+        success: true,
+        updatedCount: 0,
+        durationMs: Date.now() - startTime,
+        steps: [],
+      };
+    }
 
     // Step 1: brew update (fetches newest formulae and homebrew itself)
     const updateStep = await this.executeStep(

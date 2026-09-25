@@ -19,7 +19,7 @@
 - 🧪 **True Simulated Dry-Run (`--dry-run`)**: Traverses the full engine lifecycle, formats outdated packages, and executes mock update routines step-by-step with real-time feedback without touching system files.
 - ⚡ **High-Speed Registry Queries**: Yarn and pipx bypass heavy CLI subprocess spawning by querying the npm Registry and PyPI JSON APIs directly over HTTP with strict 3-second abort timeouts.
 - 🔐 **Non-Interactive Sudo Pre-Checks**: Privileged managers (MacPorts, Linux APT) verify cached credentials using `sudo -n true` beforehand, preventing terminal lockups and password prompt hangs.
-- 🎨 **Modern Animated UX**: Terminal interface powered by `@clack/prompts`, live spinners with truncated streaming progress output, color-coded version diffs, and structured execution summaries.
+- 🎨 **Modern Minimalist UX**: Terminal interface powered by `@clack/prompts`, micro-border tabular layouts with directional version transitions (`current → latest`), persistent real-time step progression with elapsed durations, and actionable error extraction.
 - ⚙ **Flexible Targeting**: Run interactively, execute non-interactively with `--yes`, or filter target managers using `--only` and `--exclude`.
 
 ---
@@ -30,8 +30,8 @@
 
 | Manager | Icon | Category | Detection Strategy | Update Routine & Resilience Rules |
 | :--- | :---: | :---: | :--- | :--- |
-| **[Homebrew](https://brew.sh)** | 🍺 | `system` | `brew outdated --json=v2` (JSON parsing with raw text fallback) | 1. `brew update`<br>2. `brew upgrade`<br>3. `brew upgrade --cask`<br>4. `brew cleanup` |
-| **[npm (global)](https://www.npmjs.com)** | 📦 | `runtime` | `npm outdated -g --json` (tolerates exit code 1) | 1. `npm update -g --legacy-peer-deps`<br>2. Explicit `npm install -g --legacy-peer-deps <pkg>@latest` for major bumps.<br>3. *Fallback*: If bulk update fails due to peer conflicts, automatically falls back to isolated per-package upgrades. |
+| **[Homebrew](https://brew.sh)** | 🍺 | `system` | `brew outdated --json=v2` (JSON parsing with raw text fallback) | 1. `brew update`<br>2. Selective upgrade based on pending item types: `brew upgrade --cask` (if only casks), `brew upgrade --formula` (if only formulae), or full `brew upgrade` (if both)<br>3. `brew cleanup` |
+| **[npm (global)](https://www.npmjs.com)** | 📦 | `runtime` | `npm outdated -g --json` (tolerates exit code 1) | 1. Targeted install: `npm install -g --legacy-peer-deps -- <targets>` (batched if multiple, direct if single)<br>2. *Fallback*: If batch install hits peer conflicts, falls back to isolated per-package installs.<br>3. *Script Resilience*: Retries failing packages with `--ignore-scripts -- <target>` if install lifecycle hooks fail (e.g. `only-allow pnpm`). |
 | **[pnpm (global)](https://pnpm.io)** | ⚡ | `runtime` | `pnpm outdated -g --format json` (extracts embedded JSON chunks) | `pnpm update -g --latest` |
 | **[Bun](https://bun.sh)** | 🍞 | `runtime` | `bun outdated -g` (ASCII table column parser) | 1. `bun add -g <pkg>@latest` (bypasses global semver pin lockouts)<br>2. `bun update -g`<br>3. `bun upgrade` (automatically skipped if Bun is managed via Homebrew) |
 | **[Yarn (global)](https://yarnpkg.com)** | 🧶 | `runtime` | `yarn global list --depth=0` + native npm registry HTTP checks | 1. `yarn global add <pkg>@latest` (bypasses global semver lockouts)<br>2. `yarn global upgrade` |
@@ -132,9 +132,13 @@ pnpm vitest
 
 Test coverage includes:
 - JSON and text parser edge cases (npm exit code 1, mixed pnpm CLI output, bun table formats).
-- Concurrency pool bounds and error isolation in [`UpdaterEngine`](file:///Volumes/DahchDev/projects/universal-updater/src/core/engine.ts).
+- Error extraction and sanitization ([`extractErrorMessage`](src/utils/formatting.ts#L6)) handling npm warnings, command failure chains, and clean truncation.
+- Concurrency pool bounds and error isolation in [`UpdaterEngine`](src/core/engine.ts).
+- `NpmManager` targeted batch installation, fallback trigger handling, and `--ignore-scripts` resilience.
+- `HomebrewManager` selective formula vs. cask execution branches.
 - Pre-check behaviors (skipping `/usr/bin/gem`, sudo privilege checks for MacPorts and APT).
 - HTTP registry lookup error handling for Yarn and pipx.
+- Formatting renderers (micro-border table, directional version diffs, execution summary metrics).
 
 ---
 

@@ -115,7 +115,7 @@ export class PnpmManager extends BasePackageManager {
       managerName: this.name,
       icon: this.icon,
       success,
-      updatedCount: items.length,
+      updatedCount: success ? items.length : 0,
       durationMs: Date.now() - startTime,
       steps,
       error: !success ? steps.find((s) => s.status === 'failed')?.error : undefined,
