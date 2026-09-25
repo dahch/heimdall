@@ -34,7 +34,7 @@ async function main() {
 
   // Display intro banner
   console.clear();
-  p.intro(pc.bgCyan(pc.black(' Universal Updater (uup) ')));
+  p.intro(`${pc.cyan('●')} ${pc.bold('uup')} ${pc.dim('v1.0.0')} — ${pc.dim('Universal System Updater')}`);
 
   const timeoutMs = parseInt(options.timeout || '25000', 10);
   const onlyList = options.only ? options.only.split(',') : undefined;
@@ -71,9 +71,9 @@ async function main() {
   scanSpinner.stop('Discovery and validation completed');
 
   // Summary of detected managers
-  const availableManagers = availableResults.map((r) => `${r.icon} ${r.managerName}`);
+  const availableManagers = availableResults.map((r) => `${r.icon} ${pc.bold(r.managerName)}`);
   p.log.info(
-    `${pc.bold('Active package managers detected:')} ${availableManagers.join(' • ')}`
+    `${pc.bold('Active package managers:')} ${availableManagers.join(' • ')}`
   );
 
   if (unavailableManagers.length > 0 && options.verbose) {
@@ -92,7 +92,7 @@ async function main() {
   }
 
   // Display outdated packages table
-  p.log.message(pc.bold(`\nPending updates found (${pc.yellow(String(allUpdates.length))} total):`));
+  p.log.message(`\n${pc.bold('Pending updates')} ${pc.dim(`(${allUpdates.length} total):`)}`);
   console.log(renderUpdatesTable(allUpdates));
   console.log('');
 
@@ -182,6 +182,7 @@ async function main() {
   );
 
   const updateSpinner = p.spinner();
+  let managerIndex = 0;
 
   const summary = await engine.execute(
     managersToUpdate,
@@ -190,28 +191,32 @@ async function main() {
       verbose: options.verbose,
       dryRun: isSimulated,
       onStepStart: (stepName) => {
-        updateSpinner.message(pc.cyan(`Running: ${stepName}...`));
+        updateSpinner.message(pc.dim(`Running: ${stepName}...`));
       },
       onStepProgress: (stepName, logLine) => {
         if (logLine) {
-          const truncated = logLine.length > 60 ? logLine.slice(0, 57) + '...' : logLine;
-          updateSpinner.message(pc.cyan(`${stepName} ${pc.dim(`[${truncated}]`)}`));
+          const truncated = logLine.length > 55 ? logLine.slice(0, 52) + '...' : logLine;
+          updateSpinner.message(pc.dim(`${stepName} [${truncated}]`));
         }
       },
-      onStepEnd: (stepName, success, error) => {
-        if (!success && error) {
-          updateSpinner.message(pc.yellow(`⚠ ${stepName}: ${error.split('\n')[0]}`));
-        }
+      onStepEnd: (stepName, success, error, durationMs) => {
+        const mark = success ? pc.green('✔') : pc.red('✖');
+        const durStr = durationMs !== undefined ? pc.dim(` [${formatDuration(durationMs)}]`) : '';
+        const detail = error ? pc.red(` ↳ ${error.split('\n')[0]}`) : '';
+        updateSpinner.stop(`  ${mark} ${pc.dim(stepName)}${durStr}${detail}`);
+        updateSpinner.start(pc.dim('Working...'));
       },
     },
     (mgr) => {
-      updateSpinner.start(`Starting update for ${mgr.icon} ${mgr.name}...`);
+      managerIndex++;
+      console.log(pc.bold(pc.cyan(`\n● [${managerIndex}/${managersToUpdate.length}] ${mgr.icon} ${mgr.name}`)));
+      updateSpinner.start(pc.dim('Starting update routine...'));
     },
     (mgr, res) => {
       if (res.success) {
-        updateSpinner.stop(`Completed ${mgr.icon} ${mgr.name} in ${formatDuration(res.durationMs)}`);
+        updateSpinner.stop(pc.green(`  ✔ ${mgr.name} completed in ${formatDuration(res.durationMs)}`));
       } else {
-        updateSpinner.stop(pc.red(`Failed ${mgr.icon} ${mgr.name} after ${formatDuration(res.durationMs)}`));
+        updateSpinner.stop(pc.red(`  ✖ ${mgr.name} completed with issues in ${formatDuration(res.durationMs)}`));
       }
     }
   );
@@ -223,7 +228,7 @@ async function main() {
     p.outro(
       pc.bold(
         pc.green(
-          `✔ All operations completed successfully in ${formatDuration(summary.totalDurationMs)}!`
+          `✔ All operations completed successfully: ${summary.pendingUpdatesCount} package(s) updated across ${summary.successCount} manager(s) (${formatDuration(summary.totalDurationMs)})!`
         )
       )
     );
