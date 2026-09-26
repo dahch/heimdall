@@ -108,10 +108,10 @@ export class MacPortsManager extends BasePackageManager {
               name: 'sudo privileges',
               command: 'sudo -n true',
               status: 'failed',
-              error: 'MacPorts requires sudo privileges. Run "sudo -v" in your terminal before uup.',
+              error: 'MacPorts requires sudo privileges. Run "sudo -v" in your terminal before hmd.',
             },
           ],
-          error: 'MacPorts requires sudo privileges. Run "sudo -v" before running uup.',
+          error: 'MacPorts requires sudo privileges. Run "sudo -v" before running hmd.',
         };
       }
     }

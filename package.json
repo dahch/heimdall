@@ -1,11 +1,11 @@
 {
-  "name": "universal-updater",
+  "name": "heimdall",
   "version": "1.0.0",
-  "description": "Dynamic, resilient, multi-package manager validator and updater for system and global packages",
+  "description": "Heimdall: resilient validator and updater for system and global packages",
   "type": "module",
   "bin": {
-    "uup": "./dist/cli.js",
-    "universal-updater": "./dist/cli.js"
+    "hmd": "./dist/cli.js",
+    "heimdall": "./dist/cli.js"
   },
   "scripts": {
     "dev": "tsx src/cli.ts",

@@ -102,10 +102,10 @@ export class AptManager extends BasePackageManager {
               name: 'sudo privileges',
               command: 'sudo -n true',
               status: 'failed',
-              error: 'APT requires sudo privileges. Run "sudo -v" in your terminal before uup.',
+              error: 'APT requires sudo privileges. Run "sudo -v" in your terminal before hmd.',
             },
           ],
-          error: 'APT requires sudo privileges. Run "sudo -v" before running uup.',
+          error: 'APT requires sudo privileges. Run "sudo -v" before running hmd.',
         };
       }
     }

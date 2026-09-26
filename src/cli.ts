@@ -4,6 +4,7 @@ import pc from 'picocolors';
 import { createDefaultManagers, filterManagers } from './managers/registry.js';
 import { UpdaterEngine } from './core/engine.js';
 import { renderUpdatesTable, renderExecutionSummary, formatDuration } from './utils/formatting.js';
+import { getPackageMetadata } from './utils/version.js';
 import type { UpdateItem } from './types.js';
 
 interface CliOptions {
@@ -16,12 +17,13 @@ interface CliOptions {
 }
 
 async function main() {
+  const { version, description } = getPackageMetadata();
   const program = new Command();
 
   program
-    .name('uup')
-    .description('Universal System Updater: resilient validator and updater for system and global packages')
-    .version('1.0.0')
+    .name('hmd')
+    .description(description || 'Heimdall: resilient validator and updater for system and global packages')
+    .version(version)
     .option('-y, --yes', 'Skip confirmation prompt and update all automatically')
     .option('-d, --dry-run', 'Inspect outdated packages and simulate update without running changes')
     .option('-o, --only <managers>', 'Only check and update specified managers (comma-separated, e.g. brew,npm)')
@@ -33,10 +35,14 @@ async function main() {
   const options = program.opts<CliOptions>();
 
   // Display intro banner
-  console.clear();
-  p.intro(`${pc.cyan('●')} ${pc.bold('uup')} ${pc.dim('v1.0.0')} — ${pc.dim('Universal System Updater')}`);
+  if (process.stdout.isTTY && !options.verbose) {
+    console.clear();
+  }
+  p.intro(`${pc.cyan('●')} ${pc.bold('hmd')} ${pc.dim(`v${version}`)} — ${pc.dim('Heimdall System Updater')}`);
 
-  const timeoutMs = parseInt(options.timeout || '25000', 10);
+  const rawTimeout = parseInt(options.timeout || '25000', 10);
+  const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 25000;
+
   const onlyList = options.only ? options.only.split(',') : undefined;
   const excludeList = options.exclude ? options.exclude.split(',') : undefined;
 
