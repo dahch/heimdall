@@ -2,6 +2,8 @@
 
 > A dynamic, resilient, and modern CLI to inspect, validate, and update system packages, runtimes, and global tools across macOS and Linux.
 
+[![npm version](https://img.shields.io/npm/v/@dahch/heimdall.svg)](https://www.npmjs.com/package/@dahch/heimdall)
+[![CI / Publish](https://github.com/dahch/heimdall/actions/workflows/publish.yml/badge.svg)](https://github.com/dahch/heimdall/actions/workflows/publish.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-ES2022-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.0.0-green.svg)](https://nodejs.org/)
 [![Vitest](https://img.shields.io/badge/Tested%20with-Vitest-yellow.svg)](https://vitest.dev/)
@@ -49,22 +51,34 @@ Heimdall (`hmd`) supports 13 package managers across system, runtime, language, 
 
 ## 🚀 Installation & Setup
 
+### Global Installation
+
+```bash
+npm install -g @dahch/heimdall
+# or
+bun add -g @dahch/heimdall
+# or
+pnpm add -g @dahch/heimdall
+```
+
 ### Prerequisites
 - Node.js >= 20.0.0
-- pnpm (recommended) or npm
+- Bun or pnpm or npm
 
 ### Local Development Setup
 
 ```bash
 # Clone repository
-git clone git@github.com:dahch/heimdall.git
+git clone https://github.com/dahch/heimdall.git
 cd heimdall
 
 # Install dependencies
-pnpm install
+bun install
+# or: pnpm install
 
 # Build binary with tsup
-pnpm build
+bun run build
+# or: pnpm build
 
 # Link binary globally
 npm link
@@ -129,11 +143,11 @@ heimdall --dry-run
 The test suite is powered by [Vitest](https://vitest.dev/) and provides comprehensive unit coverage for parser routines, engine concurrency, timeout isolation, and manager fallback logic:
 
 ```bash
-# Run test suite
-pnpm test
+# Run test suite (Vitest)
+bun run test # or: pnpm test
 
-# Run tests in watch mode
-pnpm vitest
+# Run static typecheck
+bun run typecheck
 ```
 
 Test coverage includes:
@@ -148,11 +162,23 @@ Test coverage includes:
 
 ---
 
+## 🚀 Release & Publishing Pipeline
+
+Heimdall employs an automated GitHub Actions CI/CD workflow ([`.github/workflows/publish.yml`](.github/workflows/publish.yml)) for publishing to npm:
+
+1. **Tag-Driven Trigger**: Releases trigger on git tag pushes matching `v*` (e.g. `v1.0.0`).
+2. **Version Verification**: Verifies tag name strictly matches the `version` field in `package.json`.
+3. **Reproducible Build**: Installs dependencies with `bun install --frozen-lockfile` and builds the bundle via `bun run build`.
+4. **Verification Gates**: Runs the test suite and static typecheck via `bun run test && bun run typecheck`.
+5. **NPM Provenance**: Publishes to npm under `@dahch/heimdall` with cryptographic provenance attestations (`npm publish --provenance`) via OpenID Connect (OIDC).
+
+---
+
 ## 📄 Documentation
 
 - [SPEC.md](SPEC.md): Technical specification, CLI contract, data models, and exit codes.
 - [DESIGN.md](DESIGN.md): System architecture, Two-Phase workflow, Engine concurrency pool, and Mermaid diagrams.
-- [ADR.md](ADR.md): Architectural Decision Records documenting key engineering decisions.
+- [ADR.md](ADR.md): Architectural Decision Records (ADR-001 through ADR-009) documenting key engineering decisions.
 - [AGENTS.md](AGENTS.md): Developer and AI agent reference manual for maintaining and extending the codebase.
 
 ---

@@ -14,14 +14,14 @@ This specification formalizes the functional contracts, command-line interface (
 
 ### 2.2 Runtime Dependencies
 - **Engine**: Node.js >= 20.0.0 (requires native ECMAScript Modules, `globalThis.fetch`, `AbortSignal.timeout`, and `process.getuid`).
-- **Package Manager / Build Tool**: `pnpm` (development and build toolchain), `tsup` (bundler), `vitest` (test harness).
+- **Package Manager / Build Tool**: Bun >= 1.0 (primary development toolchain and release runtime), `pnpm` (supported alternative), `tsup` (bundler), `vitest` (test harness).
 
 ---
 
 ## 3. Command-Line Interface (CLI) Contract
 
 ### 3.1 Binary Identifiers
-The package registers two entry point binaries via `package.json`:
+The package registers two entry point binaries via `package.json` (see [ADR-008](ADR.md#adr-008-project-rebranding-to-heimdall-cli-hmd-and-dynamic-runtime-version-resolution-from-packagejson)):
 - `hmd` (primary short command)
 - `heimdall` (canonical alias)
 
@@ -235,4 +235,28 @@ export interface PackageManager {
 3. **Execution Safety**: All execution steps default to a 180-second timeout per command (`options.timeoutMs ?? 180000`).
 4. **Idempotence**: Running `hmd` repeatedly on an already updated system performs a non-destructive read-only check and exits cleanly.
 5. **Minimalist Aesthetic**: Tabular updates and execution feedback emphasize clean typography, subtle micro-borders, high contrast indicators, persistent step lines, and actionable sanitized errors (`extractErrorMessage()`).
+
+---
+
+## 7. Package Distribution & CI/CD Contracts
+
+See [ADR-009](ADR.md#adr-009-scoped-npm-publication-dahchheimdall-with-provenance-and-bun-powered-github-actions-ci) for architectural context and trade-offs.
+
+### 7.1 Package Metadata & Registry Configuration
+- **Package Name**: `@dahch/heimdall` (scoped public package).
+- **Access Level**: `publishConfig.access: "public"`.
+- **Shipped Artifacts**: Restricts distributed payload to compiled production assets via `"files": ["dist"]`.
+- **Binaries**:
+  - `hmd`: `./dist/cli.js` (primary short command)
+  - `heimdall`: `./dist/cli.js` (canonical alias)
+
+### 7.2 Automated Release Pipeline (`.github/workflows/publish.yml`)
+- **Trigger**: Pushed git tags matching `v*` (e.g. `v1.0.0`).
+- **Security & Provenance**: Grants `id-token: write` and `contents: read` to generate SLSA provenance attestations via `npm publish --provenance`.
+- **Validation Gates**:
+  1. Tag parity check: Ensures `${GITHUB_REF_NAME#v}` strictly equals `package.json` `version`.
+  2. Frozen lockfile build: `bun install --frozen-lockfile && bun run build`.
+  3. Quality verification: `bun run test && bun run typecheck`.
+  4. Provenance publication: `npm publish --provenance`.
+
 

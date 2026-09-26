@@ -2,7 +2,7 @@
 
 ## 1. Purpose & Scope
 
-This manual serves as the technical reference for AI agents and software engineers contributing to, refactoring, or extending the **Heimdall (`hmd`)** codebase.
+This manual serves as the technical reference for AI agents and software engineers contributing to, refactoring, or extending the **Heimdall** codebase (published as `@dahch/heimdall`, exposing CLI binaries `hmd` and `heimdall`).
 
 Heimdall is an asynchronous, resilient, multi-manager updater written in TypeScript (ESM) targeting Node.js >= 20. It runs on macOS and Linux, unifying package management across system tools, language ecosystems, runtimes, and app stores.
 
@@ -11,7 +11,10 @@ Heimdall is an asynchronous, resilient, multi-manager updater written in TypeScr
 ## 2. Codebase Architecture & File Map
 
 ```
-universal-updater/
+heimdall/
+├── .github/
+│   └── workflows/
+│       └── publish.yml       # Tag-driven CI release with Bun, Vitest, and npm provenance
 ├── src/
 │   ├── cli.ts                # CLI entry point, Commander flag parsing, Clack interactive UI
 │   ├── types.ts              # Canonical TypeScript interfaces and data models
@@ -43,8 +46,9 @@ universal-updater/
 │   ├── formatting.test.ts    # Unit tests for extractErrorMessage and rendering utilities
 │   ├── managers.test.ts      # Unit tests for manager parsers, HTTP mocking, and fallback logic
 │   └── version.test.ts       # Unit tests for dynamic package metadata and version resolution
-├── package.json              # Binaries ("hmd", "heimdall"), dependencies, scripts
-├── tsconfig.json             # ES2022, NodeNext module resolution, strict mode
+├── bun.lock                  # Bun lockfile for deterministic CI/CD and local builds
+├── package.json              # Scoped package (@dahch/heimdall), bin ("hmd", "heimdall"), scripts
+├── tsconfig.json             # ES2022, NodeNext module resolution, strict mode, types: ["node"]
 └── tsup.config.ts            # tsup build configuration (ESM output with shebang)
 ```
 
@@ -104,6 +108,15 @@ When modifying or extending the codebase, you **MUST** uphold the following rule
 ### 3.8 Distinguish Fallback Triggers from Real Failures
 - When a batch step fails and transparently triggers an isolated per-package fallback (such as in `NpmManager`), mark the batch step as `status: 'skipped'`.
 - This ensures that internal fallback triggers are suppressed from user summary cards and do not trigger false-positive manager failure states when subsequent per-package steps succeed.
+
+### 3.9 Dynamic Version Resolution
+- Never hardcode the package version or CLI binary name in user-facing banners or Commander configuration.
+- Always retrieve runtime metadata through [`resolvePackageMetadata()`](src/utils/version.ts), which dynamically parses `package.json` relative to `import.meta.url` with multi-path fallbacks (see [ADR-008](ADR.md#adr-008-project-rebranding-to-heimdall-cli-hmd-and-dynamic-runtime-version-resolution-from-packagejson)).
+
+### 3.10 Scoped Package Distribution & Release CI
+- Heimdall is distributed as a public scoped npm package: `@dahch/heimdall`.
+- It defines two executable binaries in `package.json`: `hmd` (primary CLI) and `heimdall` (canonical alias).
+- Production releases are strictly managed through `.github/workflows/publish.yml`, which verifies tag parity against `package.json`, runs tests and typechecks via Bun, and publishes with cryptographic provenance attestations (`npm publish --provenance`) (see [ADR-009](ADR.md#adr-009-scoped-npm-publication-dahchheimdall-with-provenance-and-bun-powered-github-actions-ci)).
 
 ---
 
@@ -231,23 +244,42 @@ export function createDefaultManagers(): PackageManager[] {
 Add parser and execution tests in [`tests/managers.test.ts`](tests/managers.test.ts) using `vi.spyOn(execUtils, 'safeExec')` and `vi.spyOn(manager, 'isAvailable')`.
 
 ### Step 4: Verify and Build
-Execute test and build suites:
+Execute the full test, typecheck, and build suite:
 ```bash
-pnpm test
-pnpm build
+bun run test         # Run Vitest test suite
+bun run typecheck    # Validate TypeScript types (tsc --noEmit)
+bun run build        # Compile binary into dist/cli.js via tsup
 ```
+*(Equivalent commands using pnpm: `pnpm test`, `pnpm run typecheck`, `pnpm build`)*
 
 ---
 
 ## 5. Development & Testing Workflow
 
 ### Available Scripts
-- `pnpm dev`: Runs CLI in development mode using `tsx` (`tsx src/cli.ts`).
-- `pnpm test`: Runs the Vitest test suite once (`vitest run`).
-- `pnpm build`: Bundles the CLI using `tsup` into `dist/cli.js`.
-- `pnpm start`: Executes the compiled bundle (`node dist/cli.js`).
+- `bun run dev` (or `pnpm dev`): Runs CLI in development mode using `tsx` (`tsx src/cli.ts`).
+- `bun run test` (or `pnpm test`): Runs the test suite via Vitest (`vitest run`).
+- `bun run typecheck` (or `pnpm run typecheck`): Runs static typechecking via `tsc --noEmit`.
+- `bun run build` (or `pnpm build`): Bundles the production CLI binary with `tsup` into `dist/cli.js`.
+- `bun run start` (or `pnpm start`): Executes the compiled binary via `node dist/cli.js`.
+- `bun run prepublishOnly`: Automatic pre-publish verification gate (`bun run build && bun run test && bun run typecheck`).
 
 ### Testing Conventions
 1. **Mocking Subprocesses**: Never allow unit tests to invoke live system binaries like `brew` or `apt`. Mock [`safeExec`](src/utils/exec.ts#L40) using `vi.spyOn(execUtils, 'safeExec')`.
 2. **Mocking HTTP**: Mock global `fetch` using `vi.spyOn(globalThis, 'fetch')` and ensure `mockRestore()` is called after each test.
 3. **TypeScript Module Extensions**: Under `"moduleResolution": "NodeNext"`, all relative imports in TypeScript source files must end with the `.js` extension (e.g. `import { safeExec } from '../utils/exec.js';`).
+
+---
+
+## 6. Automated Release & Publishing Flow (`.github/workflows/publish.yml`)
+
+Releases are published automatically to npm using GitHub Actions upon pushing a git tag:
+
+1. **Tag Trigger**: Pushing a tag in the format `v*` (e.g., `git tag v1.0.1 && git push origin v1.0.1`) invokes the `publish` workflow.
+2. **Permissions**: The workflow requests `id-token: write` (for npm OIDC provenance attestation) and `contents: read`.
+3. **Environment Setup**: Provisions Ubuntu runner with latest Bun and Node.js 24 with registry URL set to `https://registry.npmjs.org`.
+4. **Tag Parity Check**: Validates that `${GITHUB_REF_NAME#v}` strictly matches the `version` field in `package.json`. If mismatched, the job aborts immediately.
+5. **Frozen Install & Build**: Executes `bun install --frozen-lockfile && bun run build`.
+6. **Testing & Quality Assurance**: Executes `bun run test && bun run typecheck` to prevent releasing regressions.
+7. **Provenance Publication**: Publishes package `@dahch/heimdall` using `npm publish --provenance` with secret `NPM_TOKEN`.
+

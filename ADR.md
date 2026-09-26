@@ -16,6 +16,7 @@ This document captures key architectural and design decisions made in Heimdall (
 | [ADR 006](#adr-006-minimalist-modern-uiux-with-persistent-real-time-step-progression) | Minimalist Modern UI/UX with Persistent Real-Time Step Progression | **Accepted** | 2026-09-26 |
 | [ADR 007](#adr-007-homebrew-non-redundant-targeted-upgrade-by-package-classification) | Homebrew Non-Redundant Targeted Upgrade by Package Classification | **Accepted** | 2026-09-26 |
 | [ADR 008](#adr-008-project-rebranding-to-heimdall-cli-hmd-and-dynamic-runtime-version-resolution-from-packagejson) | Project Rebranding to Heimdall (CLI: `hmd`) and Dynamic Runtime Version Resolution from `package.json` | **Accepted** | 2026-09-26 |
+| [ADR 009](#adr-009-scoped-npm-publication-dahchheimdall-with-provenance-and-bun-powered-github-actions-ci) | Scoped npm Publication (`@dahch/heimdall`) with Provenance and Bun-Powered GitHub Actions CI | **Accepted** | 2026-09-26 |
 
 ---
 
@@ -248,4 +249,18 @@ All package queries are dispatched in parallel via `Promise.all` with a strict 3
   - Positive: `package.json` becomes the single source of truth for the project version; `hmd --version` and runtime execution banners automatically reflect version bumps without manual code sync. Memorable, concise CLI command `hmd`.
   - Trade-off: Minimal file I/O (<1ms) to read and parse `package.json` at startup, cached for the invocation lifetime.
 
+---
 
+## ADR-009: Scoped npm Publication (`@dahch/heimdall`) with Provenance and Bun-Powered GitHub Actions CI
+
+- **Status**: Accepted
+- **Context**: Heimdall was originally named `heimdall` in `package.json`. Publishing directly as `heimdall` to the public npm registry conflicts with existing/reserved names. Other ecosystem tools (e.g. `@dahch/huginn`) standardize under the `@dahch/*` scope. Additionally, automated releases require supply chain security via npm provenance attestations (`id-token: write`, `--provenance`), tag-to-version verification, and deterministic CI execution.
+- **Decision**:
+  1. Scope package name to `@dahch/heimdall` in `package.json` with `"publishConfig": { "access": "public" }`.
+  2. Maintain CLI binary aliases `hmd` and `heimdall`.
+  3. Configure `"types": ["node"]` in `tsconfig.json` so `tsc --noEmit` cleanly verifies Node.js runtime globals (`fetch`, `AbortSignal`, `Buffer`).
+  4. Track `bun.lock` to guarantee reproducible `bun install --frozen-lockfile` runs on CI.
+  5. Establish `.github/workflows/publish.yml` triggered on `v*` git tag pushes, running version parity checks, Bun build & test, and publishing with `--provenance`.
+- **Consequences**:
+  - Positive: Consistent organizational namespace with `@dahch/huginn`, cryptographic provenance verifiable on npmjs.com, and strict release verification.
+  - Trade-off: Package installation uses the scoped name (`npm i -g @dahch/heimdall`), while terminal binary commands remain `hmd` and `heimdall`.
