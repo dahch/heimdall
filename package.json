@@ -1,8 +1,14 @@
 {
-  "name": "heimdall",
+  "name": "@dahch/heimdall",
   "version": "1.0.0",
   "description": "Heimdall: resilient validator and updater for system and global packages",
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
   "bin": {
     "hmd": "./dist/cli.js",
     "heimdall": "./dist/cli.js"
@@ -11,8 +17,18 @@
     "dev": "tsx src/cli.ts",
     "build": "tsup",
     "start": "node dist/cli.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build && bun run test && bun run typecheck"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dahch/heimdall.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dahch/heimdall/issues"
+  },
+  "homepage": "https://github.com/dahch/heimdall#readme",
   "keywords": [
     "cli",
     "updater",
@@ -25,7 +41,7 @@
     "pip",
     "cargo"
   ],
-  "author": "",
+  "author": "dahch",
   "license": "MIT",
   "dependencies": {
     "@clack/prompts": "^1.7.0",
