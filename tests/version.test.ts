@@ -15,6 +15,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const cliPath = resolve(__dirname, '../src/cli.ts');
 const rootPkgPath = resolve(__dirname, '../package.json');
+const rootPkg = JSON.parse(readFileSync(rootPkgPath, 'utf-8'));
 
 describe('version utility', () => {
   beforeEach(() => {
@@ -32,17 +33,18 @@ describe('version utility', () => {
       const version = getPackageVersion();
       expect(typeof version).toBe('string');
       expect(version).toMatch(/^\d+\.\d+\.\d+/);
-      expect(version).toBe('1.0.0');
+      expect(version).toBe(rootPkg.version);
     });
 
     it('falls back to default version when reading fails', () => {
       setFsAdapter({
+        existsSync: () => true,
         readFileSync: () => {
           throw new Error('EACCES');
         },
       });
       const version = getPackageVersion();
-      expect(version).toBe('1.0.0');
+      expect(version).toBe(FALLBACK_METADATA.version);
     });
 
     it('accepts per-call options with custom fsAdapter without changing global state', () => {
@@ -57,16 +59,16 @@ describe('version utility', () => {
 
       // Subsequent call without custom options should not see version 9.9.9
       clearMetadataCache();
-      expect(getPackageVersion()).toBe('1.0.0');
+      expect(getPackageVersion()).toBe(rootPkg.version);
     });
   });
 
   describe('getPackageMetadata', () => {
-    it('returns metadata with name "heimdall" and appropriate description', () => {
+    it('returns metadata with name "@dahch/heimdall" and appropriate description', () => {
       const metadata = getPackageMetadata();
       expect(metadata).toBeDefined();
-      expect(metadata.name).toBe('heimdall');
-      expect(metadata.version).toBe('1.0.0');
+      expect(metadata.name).toBe('@dahch/heimdall');
+      expect(metadata.version).toBe(rootPkg.version);
       expect(metadata.description).toBe(
         'Heimdall: resilient validator and updater for system and global packages'
       );
@@ -75,7 +77,7 @@ describe('version utility', () => {
     it('caches the resolved metadata for subsequent calls', () => {
       clearMetadataCache();
       const first = getPackageMetadata();
-      expect(first.name).toBe('heimdall');
+      expect(first.name).toBe('@dahch/heimdall');
 
       let readCallCount = 0;
       setFsAdapter({
@@ -128,7 +130,7 @@ describe('version utility', () => {
 
       const metadata = getPackageMetadata({ bypassCache: true });
       expect(metadata).toEqual(FALLBACK_METADATA);
-      expect(metadata.name).toBe('heimdall');
+      expect(metadata.name).toBe('@dahch/heimdall');
       expect(metadata.version).toBe('1.0.0');
     });
 
@@ -139,7 +141,7 @@ describe('version utility', () => {
 
       const metadata = getPackageMetadata({ bypassCache: true });
       expect(metadata).toEqual(FALLBACK_METADATA);
-      expect(metadata.name).toBe('heimdall');
+      expect(metadata.name).toBe('@dahch/heimdall');
       expect(metadata.version).toBe('1.0.0');
     });
 
@@ -150,7 +152,7 @@ describe('version utility', () => {
 
       const metadata = getPackageMetadata({ bypassCache: true });
       expect(metadata).toEqual(FALLBACK_METADATA);
-      expect(metadata.name).toBe('heimdall');
+      expect(metadata.name).toBe('@dahch/heimdall');
       expect(metadata.version).toBe('1.0.0');
     });
 
@@ -176,7 +178,7 @@ describe('version utility', () => {
         bypassCache: true,
       });
       // Should still resolve using remaining candidate(s) (e.g. process.cwd() or fallback)
-      expect(metadata.name).toBe('heimdall');
+      expect(metadata.name).toBe('@dahch/heimdall');
       expect(metadata.version).toBe('1.0.0');
     });
 
@@ -259,7 +261,7 @@ describe('version utility', () => {
     it('does not mutate or pollute cachedMetadata when basePath is provided', () => {
       // Warm global cache
       const initial = getPackageMetadata();
-      expect(initial.name).toBe('heimdall');
+      expect(initial.name).toBe('@dahch/heimdall');
 
       // Read with custom basePath and custom adapter
       const scoped = getPackageMetadata({
@@ -274,8 +276,8 @@ describe('version utility', () => {
 
       // Subsequent call without basePath still returns original cached metadata
       const cached = getPackageMetadata();
-      expect(cached.name).toBe('heimdall');
-      expect(cached.version).toBe('1.0.0');
+      expect(cached.name).toBe('@dahch/heimdall');
+      expect(cached.version).toBe(rootPkg.version);
     });
   });
 
@@ -308,12 +310,12 @@ describe('version utility', () => {
   describe('repository package.json consistency', () => {
     it('matches root package.json name, version, and description exactly', () => {
       const rawPkg = readFileSync(rootPkgPath, 'utf-8');
-      const rootPkg = JSON.parse(rawPkg);
+      const parsedPkg = JSON.parse(rawPkg);
 
       const metadata = getPackageMetadata({ bypassCache: true });
-      expect(metadata.name).toBe(rootPkg.name);
-      expect(metadata.version).toBe(rootPkg.version);
-      expect(metadata.description).toBe(rootPkg.description);
+      expect(metadata.name).toBe(parsedPkg.name);
+      expect(metadata.version).toBe(parsedPkg.version);
+      expect(metadata.description).toBe(parsedPkg.description);
     });
 
     it('validates that version conforms strictly to semver format', () => {
