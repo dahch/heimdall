@@ -1,4 +1,4 @@
-# Universal Updater (`uup`)
+# Heimdall (`hmd`)
 
 > A dynamic, resilient, and modern CLI to inspect, validate, and update system packages, runtimes, and global tools across macOS and Linux.
 
@@ -20,13 +20,14 @@
 - ⚡ **High-Speed Registry Queries**: Yarn and pipx bypass heavy CLI subprocess spawning by querying the npm Registry and PyPI JSON APIs directly over HTTP with strict 3-second abort timeouts.
 - 🔐 **Non-Interactive Sudo Pre-Checks**: Privileged managers (MacPorts, Linux APT) verify cached credentials using `sudo -n true` beforehand, preventing terminal lockups and password prompt hangs.
 - 🎨 **Modern Minimalist UX**: Terminal interface powered by `@clack/prompts`, micro-border tabular layouts with directional version transitions (`current → latest`), persistent real-time step progression with elapsed durations, and actionable error extraction.
+- 🏷 **Dynamic Version Resolution**: Reads package name and version dynamically from `package.json` at runtime via `import.meta.url`, ensuring banners and `--version` flags remain in sync with repository releases.
 - ⚙ **Flexible Targeting**: Run interactively, execute non-interactively with `--yes`, or filter target managers using `--only` and `--exclude`.
 
 ---
 
 ## 📦 Supported Package Managers
 
-`uup` supports 11 package managers across system, runtime, language, and application store categories:
+Heimdall (`hmd`) supports 13 package managers across system, runtime, language, and application store categories:
 
 | Manager | Icon | Category | Detection Strategy | Update Routine & Resilience Rules |
 | :--- | :---: | :---: | :--- | :--- |
@@ -69,14 +70,16 @@ pnpm build
 npm link
 ```
 
-After linking, both `uup` and `universal-updater` will be available in your terminal.
+After linking, both `hmd` (primary short command) and `heimdall` (canonical alias) will be available in your terminal.
 
 ---
 
 ## 💻 CLI Usage
 
 ```bash
-uup [options]
+hmd [options]
+# Or using the canonical alias:
+heimdall [options]
 ```
 
 ### Options Reference
@@ -90,30 +93,33 @@ uup [options]
 | `-t` | `--timeout <ms>` | Network/subprocess timeout per check phase in milliseconds | `25000` |
 | `-v` | `--verbose` | Output detailed diagnostic messages and skipped manager listings | `false` |
 | `-h` | `--help` | Display command help and option summary | — |
-| `-V` | `--version` | Output current version | `1.0.0` |
+| `-V` | `--version` | Output CLI version (dynamically resolved from `package.json`) | Dynamic |
 
 ### Usage Examples
 
 ```bash
 # 1. Standard Interactive Workflow
 # Discovers managers, scans updates, presents color table, prompts for choice
-uup
+hmd
 
 # 2. Dry-run Mode
 # Discovers managers, scans updates, runs simulated steps through the engine
-uup --dry-run
+hmd --dry-run
 
 # 3. Automated Routine (ideal for CI, cron jobs, or shell scripts)
-uup --yes
+hmd --yes
 
 # 4. Target Specific Package Managers
-uup --only brew,npm,bun
+hmd --only brew,npm,bun
 
 # 5. Exclude Slow or Privileged Managers
-uup --exclude macports,apt
+hmd --exclude macports,apt
 
 # 6. Adjust Check Timeout & Enable Verbose Diagnostic Logging
-uup --timeout 40000 --verbose
+hmd --timeout 40000 --verbose
+
+# 7. Using the Canonical Alias
+heimdall --dry-run
 ```
 
 ---

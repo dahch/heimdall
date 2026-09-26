@@ -2,9 +2,9 @@
 
 ## 1. Purpose & Scope
 
-This manual serves as the technical reference for AI agents and software engineers contributing to, refactoring, or extending the **Universal Updater (`uup`)** codebase.
+This manual serves as the technical reference for AI agents and software engineers contributing to, refactoring, or extending the **Heimdall (`hmd`)** codebase.
 
-Universal Updater is an asynchronous, resilient, multi-manager updater written in TypeScript (ESM) targeting Node.js >= 20. It runs on macOS and Linux, unifying package management across system tools, language ecosystems, runtimes, and app stores.
+Heimdall is an asynchronous, resilient, multi-manager updater written in TypeScript (ESM) targeting Node.js >= 20. It runs on macOS and Linux, unifying package management across system tools, language ecosystems, runtimes, and app stores.
 
 ---
 
@@ -35,13 +35,15 @@ universal-updater/
 │   └── utils/
 │       ├── exec.ts           # safeExec wrapper around execa, commandExists
 │       ├── error.ts          # Clean actionable error extractor (extractErrorMessage)
-│       └── formatting.ts     # Duration formatting, cli-table3 and execution summary renderers
+│       ├── formatting.ts     # Duration formatting, cli-table3 and execution summary renderers
+│       └── version.ts        # Dynamic package metadata resolution from package.json
 ├── tests/
 │   ├── engine.test.ts        # Unit tests for UpdaterEngine, concurrency pool, and filters
 │   ├── exec.test.ts          # Unit tests for safeExec and commandExists
 │   ├── formatting.test.ts    # Unit tests for extractErrorMessage and rendering utilities
-│   └── managers.test.ts      # Unit tests for manager parsers, HTTP mocking, and fallback logic
-├── package.json              # Binaries ("uup", "universal-updater"), dependencies, scripts
+│   ├── managers.test.ts      # Unit tests for manager parsers, HTTP mocking, and fallback logic
+│   └── version.test.ts       # Unit tests for dynamic package metadata and version resolution
+├── package.json              # Binaries ("hmd", "heimdall"), dependencies, scripts
 ├── tsconfig.json             # ES2022, NodeNext module resolution, strict mode
 └── tsup.config.ts            # tsup build configuration (ESM output with shebang)
 ```
@@ -53,7 +55,7 @@ universal-updater/
 When modifying or extending the codebase, you **MUST** uphold the following rules:
 
 ### 3.1 Strict Non-Interactivity
-- Subprocesses spawned by `uup` must **NEVER** hang waiting for terminal input.
+- Subprocesses spawned by `hmd` must **NEVER** hang waiting for terminal input.
 - Always use [`safeExec`](src/utils/exec.ts#L40) which automatically injects `CI=true`, `DEBIAN_FRONTEND=noninteractive`, and `stdin: 'ignore'`.
 - If invoking commands that accept confirmation flags, explicitly pass `-y`, `--yes`, or `--noninteractive` (e.g. `apt-get -y`, `flatpak update -y`).
 
@@ -81,7 +83,7 @@ When modifying or extending the codebase, you **MUST** uphold the following rule
         updatedCount: 0,
         durationMs: Date.now() - startTime,
         steps: [{ name: 'sudo privileges', command: 'sudo -n true', status: 'failed', error: '...' }],
-        error: 'Requires sudo privileges. Run "sudo -v" before uup.',
+        error: 'Requires sudo privileges. Run "sudo -v" before hmd.',
       };
     }
   }

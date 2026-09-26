@@ -1,6 +1,6 @@
-# Architecture Decision Records (ADR) — Universal Updater
+# Architecture Decision Records (ADR) — Heimdall
 
-This document captures key architectural and design decisions made in Universal Updater (`uup`), including context, evaluation, trade-offs, and consequences.
+This document captures key architectural and design decisions made in Heimdall (`hmd`), including context, evaluation, trade-offs, and consequences.
 
 ---
 
@@ -12,6 +12,10 @@ This document captures key architectural and design decisions made in Universal 
 | [ADR 002](#adr-002-bypassing-major-semver-range-restrictions-in-bun-and-yarn-global-packages) | Bypassing Major Semver Range Restrictions in Bun and Yarn Global Packages | **Accepted** | 2026-09-03 |
 | [ADR 003](#adr-003-deprecating-and-skipping-apple-system-ruby-usrbinruby-gem) | Deprecating and Skipping Apple System Ruby (`/usr/bin/gem`) | **Accepted** | 2026-09-03 |
 | [ADR 004](#adr-004-native-http-registry-checks-over-subprocess-spawning-yarn--pipx) | Native HTTP Registry Checks Over Subprocess Spawning (Yarn & Pipx) | **Accepted** | 2026-09-03 |
+| [ADR 005](#adr-005-targeted-npm-package-updates-with-multi-tier-fallback-and---ignore-scripts-recovery) | Targeted npm Package Updates with Multi-Tier Fallback and `--ignore-scripts` Recovery | **Accepted** | 2026-09-26 |
+| [ADR 006](#adr-006-minimalist-modern-uiux-with-persistent-real-time-step-progression) | Minimalist Modern UI/UX with Persistent Real-Time Step Progression | **Accepted** | 2026-09-26 |
+| [ADR 007](#adr-007-homebrew-non-redundant-targeted-upgrade-by-package-classification) | Homebrew Non-Redundant Targeted Upgrade by Package Classification | **Accepted** | 2026-09-26 |
+| [ADR 008](#adr-008-project-rebranding-to-heimdall-cli-hmd-and-dynamic-runtime-version-resolution-from-packagejson) | Project Rebranding to Heimdall (CLI: `hmd`) and Dynamic Runtime Version Resolution from `package.json` | **Accepted** | 2026-09-26 |
 
 ---
 
@@ -227,4 +231,21 @@ All package queries are dispatched in parallel via `Promise.all` with a strict 3
 - **Consequences**:
   - Positive: Eliminates redundant upgrade passes, significantly shortening execution times when updating only casks or only formulae.
   - Trade-off: None; formula and cask classifications are reliably provided by `brew outdated --json=v2`.
+
+---
+
+## ADR-008: Project Rebranding to Heimdall (CLI: `hmd`) and Dynamic Runtime Version Resolution from `package.json`
+
+- **Status**: Accepted
+- **Context**: The project was initially named `universal-updater` with primary command `uup`. The project is officially rebranded to **Heimdall** with short CLI binary **`hmd`** (the mythical all-seeing guardian of the Bifröst, overseeing all packages across the system). Additionally, previously the CLI version was hardcoded as `'1.0.0'` in Commander initialization and the clack intro banner, risking inconsistency when bumping versions in `package.json`.
+- **Decision**:
+  1. Rename package to `heimdall` in `package.json` and register binary entries for `hmd` (primary CLI) and `heimdall` (canonical alias).
+  2. Set Commander program name to `hmd`.
+  3. Implement dynamic package metadata / version extraction in `src/utils/version.ts` using `import.meta.url` resolution to read `package.json` at runtime, with robust multi-path fallbacks.
+  4. Pass dynamic `version` to both `program.version(version)` and the intro banner `p.intro(...)`.
+  5. Harmonize all CLI error notices (such as sudo escalation instructions in MacPorts and APT) from `uup` to `hmd`.
+- **Consequences**:
+  - Positive: `package.json` becomes the single source of truth for the project version; `hmd --version` and runtime execution banners automatically reflect version bumps without manual code sync. Memorable, concise CLI command `hmd`.
+  - Trade-off: Minimal file I/O (<1ms) to read and parse `package.json` at startup, cached for the invocation lifetime.
+
 

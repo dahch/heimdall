@@ -1,8 +1,8 @@
-# Technical Specification: Universal Updater (`uup`)
+# Technical Specification: Heimdall (`hmd`)
 
 ## 1. Document Overview
 
-This specification formalizes the functional contracts, command-line interface (CLI), data models, execution semantics, and non-functional requirements of **Universal Updater** (`uup`). It serves as the authoritative technical benchmark for system behavior.
+This specification formalizes the functional contracts, command-line interface (CLI), data models, execution semantics, and non-functional requirements of **Heimdall** (`hmd`). It serves as the authoritative technical benchmark for system behavior.
 
 ---
 
@@ -21,15 +21,15 @@ This specification formalizes the functional contracts, command-line interface (
 ## 3. Command-Line Interface (CLI) Contract
 
 ### 3.1 Binary Identifiers
-The package registers two identical entry point binaries via `package.json`:
-- `uup` (primary short command)
-- `universal-updater` (canonical alias)
+The package registers two entry point binaries via `package.json`:
+- `hmd` (primary short command)
+- `heimdall` (canonical alias)
 
 Both point to [`dist/cli.js`](dist/cli.js), built from [`src/cli.ts`](src/cli.ts).
 
 ### 3.2 Command Signature
 ```bash
-uup [options]
+hmd [options]
 ```
 
 ### 3.3 CLI Flags & Options
@@ -43,7 +43,7 @@ uup [options]
 | `-t` | `--timeout <ms>` | `string` | `"25000"` | Per-manager timeout in milliseconds for the outdated scan phase. Parsed as base-10 integer. |
 | `-v` | `--verbose` | `boolean` | `false` | Enables verbose diagnostics, including listing skipped/inactive managers and unhandled step warnings. |
 | `-h` | `--help` | `boolean` | `false` | Displays standard Commander help table and exits. |
-| `-V` | `--version` | `boolean` | `false` | Outputs CLI version (`1.0.0`) and exits. |
+| `-V` | `--version` | `boolean` | `false` | Outputs CLI version dynamically resolved from `package.json` and exits. |
 
 ### 3.4 Process Exit Codes
 
@@ -204,7 +204,7 @@ export interface PackageManager {
 1. **Sequential Execution**: Selected managers execute sequentially to avoid lockfile contention (e.g. brew locks, dpkg database locks).
 2. **Dry-Run Emulation**: When `options.dryRun` is `true`, [`BasePackageManager.executeStep()`](src/managers/base.ts#L31) prints `[DRY-RUN] Would run: <command>` and returns `status: 'success'` with `durationMs: 0` without invoking `safeExec`.
 3. **Privilege Pre-Checks**:
-   - `MacPortsManager` and `AptManager` run `sudo -n true` (timeout: 3,000ms) before executing privileged operations. If non-interactive sudo is unavailable, they fail fast with clear instructions (`Run "sudo -v" before uup`) instead of hanging the process.
+   - `MacPortsManager` and `AptManager` run `sudo -n true` (timeout: 3,000ms) before executing privileged operations. If non-interactive sudo is unavailable, they fail fast with clear instructions (`Run "sudo -v" before hmd`) instead of hanging the process.
 4. **Major Semver Upgrades (Bun & Yarn)**:
    - `BunManager`: Runs `bun add -g <pkg>@latest` prior to `bun update -g` to bypass semver restrictions in `~/.bun/install/global/package.json`.
    - `YarnManager`: Runs `yarn global add <pkg>@latest` prior to `yarn global upgrade`.
@@ -233,6 +233,6 @@ export interface PackageManager {
 1. **Safety**: Commands are spawned with non-interactive flags (`CI=true`, `DEBIAN_FRONTEND=noninteractive`, `stdin: 'ignore'`). Commands must never block indefinitely waiting for user TTY input.
 2. **Observability**: Subprocess output is captured via line-by-line streaming. Spinners display real-time live activity, and completed steps are printed as persistent terminal lines with execution durations (`✔ step [duration]`).
 3. **Execution Safety**: All execution steps default to a 180-second timeout per command (`options.timeoutMs ?? 180000`).
-4. **Idempotence**: Running `uup` repeatedly on an already updated system performs a non-destructive read-only check and exits cleanly.
+4. **Idempotence**: Running `hmd` repeatedly on an already updated system performs a non-destructive read-only check and exits cleanly.
 5. **Minimalist Aesthetic**: Tabular updates and execution feedback emphasize clean typography, subtle micro-borders, high contrast indicators, persistent step lines, and actionable sanitized errors (`extractErrorMessage()`).
 

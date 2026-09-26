@@ -1,8 +1,8 @@
-# Universal Updater (`uup`) — System Architecture & Design
+# Heimdall (`hmd`) — System Architecture & Design
 
 ## 1. Architectural Principles
 
-Universal Updater is architected around four core design tenets:
+Heimdall is architected around four core design tenets:
 
 1. **Provider / Adapter Pattern**: Each package manager is implemented as an autonomous adapter conforming to a unified [`PackageManager`](src/types.ts#L58-L67) interface. High-level orchestrators never interact with manager-specific CLI syntax directly.
 2. **Resilience First (Fault Isolation)**: No single tool failure, command timeout, missing binary, or network disruption can crash the engine. All checks and execution steps run inside defensive try/catch wrappers that produce structured error states instead of unhandled rejections.
@@ -20,7 +20,7 @@ The lifecycle is divided into five distinct stages spanning the two main phases:
 ```mermaid
 flowchart TD
     subgraph CLI ["CLI Entry (src/cli.ts)"]
-        Start(["uup invocation"]) --> ParseFlags["Parse Commander Options\n(--dry-run, --yes, --only, --exclude)"]
+        Start(["hmd invocation"]) --> ParseFlags["Parse Commander Options\n(--dry-run, --yes, --only, --exclude)"]
         ParseFlags --> InitReg["Initialize Default Managers\n(src/managers/registry.ts)"]
         InitReg --> Filter["Apply Name / ID Filters"]
     end
@@ -240,7 +240,7 @@ The CLI presentation layer balances minimalist aesthetics with high information 
 ```mermaid
 flowchart TD
     subgraph UI_Components ["UI Components (src/utils/formatting.ts & src/cli.ts)"]
-        HeaderBanner["Intro Banner\n● uup v1.0.0 — Universal System Updater"]
+        HeaderBanner["Intro Banner\n● hmd v<version> — Heimdall System Updater"]
         DiffTable["Micro-Border Pending Updates Table\n(Manager • Package • [Type] • Current → Latest)"]
         LiveStep["Persistent Live Step Feedback\n✔ / ✖ Step Name [durationMs] ↳ Error"]
         SummaryCard["Dual-Counter Execution Summary\n(Updated vs Issues per manager & Global totals)"]
