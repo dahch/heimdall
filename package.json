@@ -1,6 +1,6 @@
 {
   "name": "@dahch/heimdall",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Heimdall: resilient validator and updater for system and global packages",
   "type": "module",
   "publishConfig": {
@@ -10,8 +10,8 @@
     "dist"
   ],
   "bin": {
-    "hmd": "./dist/cli.js",
-    "heimdall": "./dist/cli.js"
+    "hmd": "dist/cli.js",
+    "heimdall": "dist/cli.js"
   },
   "scripts": {
     "dev": "tsx src/cli.ts",

@@ -130,19 +130,20 @@ describe('version utility', () => {
 
       const metadata = getPackageMetadata({ bypassCache: true });
       expect(metadata).toEqual(FALLBACK_METADATA);
-      expect(metadata.name).toBe('@dahch/heimdall');
-      expect(metadata.version).toBe('1.0.0');
+      expect(metadata.name).toBe(FALLBACK_METADATA.name);
+      expect(metadata.version).toBe(FALLBACK_METADATA.version);
     });
 
     it('falls back safely when package.json contains invalid/corrupted JSON', () => {
       setFsAdapter({
+        existsSync: () => true,
         readFileSync: () => '{ corrupted json: not valid ...',
       });
 
       const metadata = getPackageMetadata({ bypassCache: true });
       expect(metadata).toEqual(FALLBACK_METADATA);
-      expect(metadata.name).toBe('@dahch/heimdall');
-      expect(metadata.version).toBe('1.0.0');
+      expect(metadata.name).toBe(FALLBACK_METADATA.name);
+      expect(metadata.version).toBe(FALLBACK_METADATA.version);
     });
 
     it('falls back safely when no candidate file exists', () => {
@@ -152,12 +153,13 @@ describe('version utility', () => {
 
       const metadata = getPackageMetadata({ bypassCache: true });
       expect(metadata).toEqual(FALLBACK_METADATA);
-      expect(metadata.name).toBe('@dahch/heimdall');
-      expect(metadata.version).toBe('1.0.0');
+      expect(metadata.name).toBe(FALLBACK_METADATA.name);
+      expect(metadata.version).toBe(FALLBACK_METADATA.version);
     });
 
     it('falls back safely when package.json has empty or invalid field types', () => {
       setFsAdapter({
+        existsSync: () => true,
         readFileSync: () =>
           JSON.stringify({
             name: '',
@@ -177,9 +179,10 @@ describe('version utility', () => {
         basePath: '/nonexistent/path/unlikely_to_exist_xyz_987',
         bypassCache: true,
       });
-      // Should still resolve using remaining candidate(s) (e.g. process.cwd() or fallback)
-      expect(metadata.name).toBe('@dahch/heimdall');
-      expect(metadata.version).toBe('1.0.0');
+      // Falls back safely to FALLBACK_METADATA
+      expect(metadata).toEqual(FALLBACK_METADATA);
+      expect(metadata.name).toBe(FALLBACK_METADATA.name);
+      expect(metadata.version).toBe(FALLBACK_METADATA.version);
     });
 
     it('handles JSON primitives gracefully (number, boolean, null, string)', () => {

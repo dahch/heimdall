@@ -15,7 +15,7 @@ export interface VersionFsAdapter {
 
 export const FALLBACK_METADATA: PackageMetadata = {
   name: '@dahch/heimdall',
-  version: '1.0.0',
+  version: '1.0.1',
   description: 'Heimdall: resilient validator and updater for system and global packages',
 };
 
