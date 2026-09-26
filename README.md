@@ -57,8 +57,8 @@ Heimdall (`hmd`) supports 13 package managers across system, runtime, language, 
 
 ```bash
 # Clone repository
-git clone https://github.com/user/universal-updater.git
-cd universal-updater
+git clone git@github.com:dahch/heimdall.git
+cd heimdall
 
 # Install dependencies
 pnpm install
