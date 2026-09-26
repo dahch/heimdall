@@ -71,7 +71,7 @@ export function renderExecutionSummary(results: UpdateExecutionResult[]): string
   const lines: string[] = [];
   lines.push('');
   lines.push(pc.dim('─'.repeat(60)));
-  lines.push(`  ${pc.bold(pc.cyan('Universal Updater'))} ${pc.dim('• Execution Summary')}`);
+  lines.push(`  ${pc.bold(pc.cyan('Heimdall'))} ${pc.dim('• Execution Summary')}`);
   lines.push(pc.dim('─'.repeat(60)));
 
   for (const res of results) {

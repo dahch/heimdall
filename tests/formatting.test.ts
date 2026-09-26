@@ -153,6 +153,7 @@ fatal: connection reset by peer
       ];
 
       const output = renderExecutionSummary(results);
+      expect(output).toContain('Heimdall');
       expect(output).toContain('Execution Summary');
       expect(output).toContain('Homebrew');
       expect(output).toContain('npm (global)');
