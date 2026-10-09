@@ -196,6 +196,13 @@ async function main() {
     {
       verbose: options.verbose,
       dryRun: isSimulated,
+      confirmAction: async (message: string) => {
+        if (options.yes) return true;
+        updateSpinner.stop(pc.dim('Waiting for user confirmation...'));
+        const confirmed = await p.confirm({ message, initialValue: false });
+        updateSpinner.start(pc.dim('Continuing update...'));
+        return typeof confirmed === 'boolean' ? confirmed : false;
+      },
       onStepStart: (stepName) => {
         updateSpinner.message(pc.dim(`Running: ${stepName}...`));
       },
