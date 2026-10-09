@@ -32,7 +32,7 @@ flowchart TD
         Pool --> QueryNPM["npm\nnpm outdated -g --json"]
         Pool --> QueryYarn["Yarn\nHTTP registry.npmjs.org"]
         Pool --> QueryPipx["pipx\nHTTP pypi.org API"]
-        Pool --> QueryOthers["Other Managers\n(pnpm, bun, pip, gem, port, mas, apt, flatpak)"]
+        Pool --> QueryOthers["Other Managers\n(pnpm, bun, pip, gem, port, mas, apt, dnf, flatpak)"]
         QueryBrew & QueryNPM & QueryYarn & QueryPipx & QueryOthers --> AggUpdates["Aggregate Updates & Warnings"]
     end
 
@@ -51,7 +51,7 @@ flowchart TD
     subgraph Phase2 ["Phase 2: Controlled Sequential Execution"]
         SetDryRun & SetYes & PromptClack & MultiSelect --> EngineExec["UpdaterEngine.execute()\n(Sequential Manager Iteration)"]
         EngineExec --> ManagerLoop["For each selected manager"]
-        ManagerLoop --> SudoPreCheck{"Privilege Check\n(MacPorts / APT)"}
+        ManagerLoop --> SudoPreCheck{"Privilege Check\n(MacPorts / APT / DNF)"}
         SudoPreCheck -- "sudo -n true fails" --> FastFail["Fail Step Fast with Guidance"]
         SudoPreCheck -- "Privileges OK or User" --> ExecRoutine["Execute Manager Update Routine"]
         ExecRoutine --> StepExec["BasePackageManager.executeStep()"]
@@ -167,6 +167,7 @@ classDiagram
     BasePackageManager <|-- HomebrewManager : system
     BasePackageManager <|-- MacPortsManager : system
     BasePackageManager <|-- AptManager : system
+    BasePackageManager <|-- DnfManager : system
     BasePackageManager <|-- FlatpakManager : system
 
     BasePackageManager <|-- NpmManager : runtime
@@ -223,13 +224,14 @@ flowchart LR
 ```
 
 ### Specific Resilience Strategies:
-1. **MacPorts & APT Non-Interactive Sudo**: Before attempting `sudo port` or `sudo apt-get`, managers test credentials via `sudo -n true`. If cached privileges have expired, they fail immediately with actionable user advice, avoiding a 3-minute freeze.
+1. **MacPorts, APT & DNF Non-Interactive Sudo**: Before attempting `sudo port`, `sudo apt-get`, or `sudo dnf`, managers test credentials via `sudo -n true`. If cached privileges have expired, they fail immediately with actionable user advice, avoiding a 3-minute freeze.
 2. **Bun & Yarn Global Semver Override**: Standard `bun update -g` and `yarn global upgrade` obey version ranges stored in their global manifest files, ignoring newer major releases. Both managers prepend explicit `add -g <pkg>@latest` steps to force upgrades across major semver boundaries.
 3. **Bun Coexistence with Homebrew**: Calling `bun upgrade` when Bun was installed via Homebrew produces errors or broken symlinks. `BunManager` inspects `which bun` and skips self-upgrade if managed by Homebrew.
 4. **npm Targeted Batching, Multi-Tier Fallback & Script Recovery**: `NpmManager` targets outdated packages directly via `npm install -g --legacy-peer-deps -- <pkg>@<latest>...`. Package targets use POSIX `--` separation to avoid colliding with CLI flags. If only 1 package is outdated, it proceeds straight to isolated install; if a batch install fails (e.g. peer conflicts), the batch step is marked `status = 'skipped'` (fallback trigger) and it falls back to isolated per-package installation. If an individual package fails due to install lifecycle scripts (`only-allow pnpm`, `node-gyp`), it automatically retries with `--ignore-scripts -- <target>`.
 5. **Native HTTP Registry Lookups (Yarn & Pipx)**: Rather than spawning hundreds of `npm view` or `pip index` sub-processes, Yarn and pipx make concurrent HTTP `fetch` requests directly to `registry.npmjs.org` and `pypi.org` with 3-second abort signals.
 6. **Homebrew Non-Redundant Targeted Upgrades**: `HomebrewManager` inspects pending item classifications. If only casks are pending, it runs `brew upgrade --cask` (bypassing formula graph resolution). If only formulae are pending, it runs `brew upgrade --formula`. If both are pending, it runs `brew upgrade`.
 7. **Sanitized Error Extraction**: Raw stderr and stdout often contain non-fatal runtime warnings (`npm warn`, `warning:`, `notice`) or truncated JSON dumps that mask the actual failure. `extractErrorMessage()` filters ambient notices, extracts specific error lines (`npm error`, `fatal:`, `command failed`), and cleanly truncates output for compact display.
+8. **DNF Safe Refresh & Interactive Autoremove**: `DnfManager` runs `sudo dnf upgrade -y --refresh` ensuring repository metadata freshness before upgrade. It decouples `sudo dnf autoremove -y`, prompting the user interactively via `confirmAction` (automatically approved under `--yes` or simulated under `--dry-run`).
 
 ---
 

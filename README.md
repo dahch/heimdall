@@ -20,7 +20,7 @@
   2. **Aggregated Review & Confirmation**: Shows an interactive tabular overview comparing current and latest package versions across all managers, prompting for confirmation before modifying the system.
 - 🧪 **True Simulated Dry-Run (`--dry-run`)**: Traverses the full engine lifecycle, formats outdated packages, and executes mock update routines step-by-step with real-time feedback without touching system files.
 - ⚡ **High-Speed Registry Queries**: Yarn and pipx bypass heavy CLI subprocess spawning by querying the npm Registry and PyPI JSON APIs directly over HTTP with strict 3-second abort timeouts.
-- 🔐 **Non-Interactive Sudo Pre-Checks**: Privileged managers (MacPorts, Linux APT) verify cached credentials using `sudo -n true` beforehand, preventing terminal lockups and password prompt hangs.
+- 🔐 **Non-Interactive Sudo Pre-Checks**: Privileged managers (MacPorts, Linux APT, Linux DNF) verify cached credentials using `sudo -n true` beforehand, preventing terminal lockups and password prompt hangs.
 - 🎨 **Modern Minimalist UX**: Terminal interface powered by `@clack/prompts`, micro-border tabular layouts with directional version transitions (`current → latest`), persistent real-time step progression with elapsed durations, and actionable error extraction.
 - 🏷 **Dynamic Version Resolution**: Reads package name and version dynamically from `package.json` at runtime via `import.meta.url`, ensuring banners and `--version` flags remain in sync with repository releases.
 - ⚙ **Flexible Targeting**: Run interactively, execute non-interactively with `--yes`, or filter target managers using `--only` and `--exclude`.
@@ -29,7 +29,7 @@
 
 ## 📦 Supported Package Managers
 
-Heimdall (`hmd`) supports 13 package managers across system, runtime, language, and application store categories:
+Heimdall (`hmd`) supports 14 package managers across system, runtime, language, and application store categories:
 
 | Manager | Icon | Category | Detection Strategy | Update Routine & Resilience Rules |
 | :--- | :---: | :---: | :--- | :--- |
@@ -45,6 +45,7 @@ Heimdall (`hmd`) supports 13 package managers across system, runtime, language, 
 | **[MacPorts](https://www.macports.org)** | ⚓ | `system` | `port outdated` + non-interactive `sudo -n true` verification | 1. `sudo port selfupdate`<br>2. `sudo port upgrade outdated` |
 | **[Mac App Store (mas)](https://github.com/mas-cli/mas)** | 🍎 | `appstore` | `mas outdated` | `mas upgrade` |
 | **[APT (Debian/Ubuntu)](https://wiki.debian.org/Apt)** | 🐧 | `system` | `apt list --upgradable` + non-interactive `sudo -n true` check | 1. `sudo apt-get update -y`<br>2. `sudo apt-get upgrade -y`<br>3. `sudo apt-get autoremove -y` |
+| **[DNF (Fedora/RHEL)](https://docs.fedoraproject.org/en-US/quick-docs/dnf/)** | 📦 | `system` | `dnf check-update -y` (exit code 100 signals updates) + `sudo -n true` check | 1. `sudo dnf upgrade -y --refresh`<br>2. `sudo dnf autoremove -y` (prompted interactively with confirmation prompt, auto-approved with `--yes` or `--dry-run`) |
 | **[Flatpak](https://flatpak.org)** | 📦 | `system` | `flatpak remote-ls --updates` | `flatpak update -y --noninteractive` |
 
 ---
@@ -178,7 +179,7 @@ Heimdall employs an automated GitHub Actions CI/CD workflow ([`.github/workflows
 
 - [SPEC.md](SPEC.md): Technical specification, CLI contract, data models, and exit codes.
 - [DESIGN.md](DESIGN.md): System architecture, Two-Phase workflow, Engine concurrency pool, and Mermaid diagrams.
-- [ADR.md](ADR.md): Architectural Decision Records (ADR-001 through ADR-009) documenting key engineering decisions.
+- [ADR.md](ADR.md): Architectural Decision Records (ADR-001 through ADR-010) documenting key engineering decisions.
 - [AGENTS.md](AGENTS.md): Developer and AI agent reference manual for maintaining and extending the codebase.
 
 ---

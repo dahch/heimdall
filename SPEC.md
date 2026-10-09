@@ -10,7 +10,7 @@ This specification formalizes the functional contracts, command-line interface (
 
 ### 2.1 Supported Host Environments
 - **macOS (Darwin)**: macOS 12.0 (Monterey) through macOS 15+ (Sequoia) on Apple Silicon (`arm64`) and Intel (`x86_64`).
-- **Linux**: Modern distributions (Debian, Ubuntu, Fedora, Arch Linux) supporting glibc >= 2.31, system-level package tools (`apt`), and flatpak containers.
+- **Linux**: Modern distributions (Debian, Ubuntu, Fedora, CentOS Stream, RHEL, Arch Linux) supporting glibc >= 2.31, system-level package tools (`apt`, `dnf`), and flatpak containers.
 
 ### 2.2 Runtime Dependencies
 - **Engine**: Node.js >= 20.0.0 (requires native ECMAScript Modules, `globalThis.fetch`, `AbortSignal.timeout`, and `process.getuid`).
@@ -112,6 +112,7 @@ export interface ExecutionOptions {
   dryRun?: boolean;
   verbose?: boolean;
   timeoutMs?: number;
+  confirmAction?: (message: string) => Promise<boolean>;
   onStepStart?: (step: string) => void;
   onStepProgress?: (step: string, logLine: string) => void;
   onStepEnd?: (step: string, success: boolean, error?: string, durationMs?: number) => void;
@@ -163,6 +164,25 @@ export interface PackageManager {
 }
 ```
 
+### 4.9 Supported Package Managers Matrix
+
+| ID | Name | Category | Binary | Platform | Item Type(s) | Outdated Strategy | Upgrade Command(s) |
+| :--- | :--- | :---: | :--- | :--- | :--- | :--- | :--- |
+| `homebrew` | Homebrew | `system` | `brew` | macOS, Linux | `formula`, `cask` | `brew outdated --json=v2` | `brew upgrade` (selective cask/formula) + `brew cleanup` |
+| `npm` | npm (global) | `runtime` | `npm` | Cross-platform | `global-pkg` | `npm outdated -g --json` | `npm install -g --legacy-peer-deps` (batch & isolated fallback) |
+| `pnpm` | pnpm (global) | `runtime` | `pnpm` | Cross-platform | `global-pkg` | `pnpm outdated -g --format json` | `pnpm update -g --latest` |
+| `bun` | Bun | `runtime` | `bun` | macOS, Linux | `global-pkg` | `bun outdated -g` | `bun add -g <pkgs>@latest` + `bun update -g` + `bun upgrade` |
+| `yarn` | Yarn (global) | `runtime` | `yarn` | Cross-platform | `global-pkg` | `yarn global list` + npm registry HTTP | `yarn global add <pkgs>@latest` + `yarn global upgrade` |
+| `python` | Python (pip user) | `language` | `pip3` / `pip` | Cross-platform | `pip-pkg` | `pip3 list --user --outdated --format=json` | `pip3 install --user --upgrade` |
+| `pipx` | pipx | `language` | `pipx` | Cross-platform | `pipx-app` | `pipx list --json` + PyPI HTTP API | `pipx upgrade-all` |
+| `cargo` | Rust (Cargo & Rustup) | `language` | `cargo` / `rustup` | Cross-platform | `crate`, `toolchain` | `rustup check` + `cargo install-update -l` | `rustup update` + `cargo install-update -a` |
+| `gem` | Ruby Gem | `language` | `gem` | Cross-platform | `gem` | `gem outdated` | `gem update --user-install` + `gem cleanup` |
+| `macports` | MacPorts | `system` | `port` | macOS | `port` | `port outdated` | `sudo port selfupdate` + `sudo port upgrade outdated` |
+| `mas` | Mac App Store | `appstore` | `mas` | macOS | `mas-app` | `mas outdated` | `mas upgrade` |
+| `apt` | APT | `system` | `apt` / `apt-get` | Linux (Debian, Ubuntu) | `deb` | `apt list --upgradable` | `sudo apt-get update` + `upgrade` + `autoremove` |
+| `dnf` | DNF (Fedora/RHEL) | `system` | `dnf` | Linux (Fedora, RHEL, CentOS) | `rpm` | `dnf check-update -y` (exit code 100) | `sudo dnf upgrade -y --refresh` + conditional `sudo dnf autoremove -y` |
+| `flatpak` | Flatpak | `system` | `flatpak` | Linux | `flatpak` | `flatpak remote-ls --updates` | `flatpak update -y --noninteractive` |
+
 ---
 
 ## 5. Behavioral Specifications & Lifecycle
@@ -188,6 +208,7 @@ export interface PackageManager {
    - `NpmManager`: Treats exit code 1 as a valid check state (npm exits 1 when outdated packages are detected).
    - `PnpmManager`: Extracts the substring between the first `{` and last `}` to safely isolate JSON payloads from ambient CLI notices or ASCII tables.
    - `BunManager`: Parses markdown ASCII table lines formatted as `| Package | Current | Update | Latest |`.
+   - `DnfManager`: Treats exit code 100 as indicating available updates and exit code 0 as up to date; parses columnar output (`<package>.<arch> <version> <repo>`) including multiline wrapped entries while ignoring repository loading notices.
 
 ### 5.3 Stage 3: Aggregation & Confirmation
 1. **Zero-Update Short-Circuit**: If `allUpdates.length === 0`, the CLI displays an up-to-date banner and exits immediately with code `0`.
@@ -204,7 +225,7 @@ export interface PackageManager {
 1. **Sequential Execution**: Selected managers execute sequentially to avoid lockfile contention (e.g. brew locks, dpkg database locks).
 2. **Dry-Run Emulation**: When `options.dryRun` is `true`, [`BasePackageManager.executeStep()`](src/managers/base.ts#L31) prints `[DRY-RUN] Would run: <command>` and returns `status: 'success'` with `durationMs: 0` without invoking `safeExec`.
 3. **Privilege Pre-Checks**:
-   - `MacPortsManager` and `AptManager` run `sudo -n true` (timeout: 3,000ms) before executing privileged operations. If non-interactive sudo is unavailable, they fail fast with clear instructions (`Run "sudo -v" before hmd`) instead of hanging the process.
+   - `MacPortsManager`, `AptManager`, and `DnfManager` run `sudo -n true` (timeout: 3,000ms) before executing privileged operations. If non-interactive sudo is unavailable, they fail fast with clear instructions (`Run "sudo -v" before hmd` or `Run "sudo -v" before running hmd`) instead of hanging the process.
 4. **Major Semver Upgrades (Bun & Yarn)**:
    - `BunManager`: Runs `bun add -g <pkg>@latest` prior to `bun update -g` to bypass semver restrictions in `~/.bun/install/global/package.json`.
    - `YarnManager`: Runs `yarn global add <pkg>@latest` prior to `yarn global upgrade`.
@@ -225,6 +246,9 @@ export interface PackageManager {
    - If both categories (or unclassified packages) are pending, it executes full `brew upgrade`.
    - In all scenarios, `brew update` executes prior to upgrading, and `brew cleanup` executes afterwards.
    - The reported `updatedCount` accurately reflects package counts only when the upgrade step succeeds (`upgradeSucceeded ? items.length : 0`).
+9. **DNF Refresh & Interactive Autoremove**:
+   - `DnfManager` executes `sudo dnf upgrade -y --refresh` to ensure repository metadata freshness before applying package upgrades.
+   - Following upgrade success, `DnfManager` handles `sudo dnf autoremove -y` conditionally: in dry-run mode, it simulates execution; in live runs with interactive confirmation callback (`options.confirmAction`), it prompts the user interactively (automatically approved under `--yes`). If declined, the autoremove step is marked with `status: 'skipped'`.
 
 ---
 

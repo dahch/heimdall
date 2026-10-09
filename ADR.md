@@ -17,6 +17,7 @@ This document captures key architectural and design decisions made in Heimdall (
 | [ADR 007](#adr-007-homebrew-non-redundant-targeted-upgrade-by-package-classification) | Homebrew Non-Redundant Targeted Upgrade by Package Classification | **Accepted** | 2026-09-26 |
 | [ADR 008](#adr-008-project-rebranding-to-heimdall-cli-hmd-and-dynamic-runtime-version-resolution-from-packagejson) | Project Rebranding to Heimdall (CLI: `hmd`) and Dynamic Runtime Version Resolution from `package.json` | **Accepted** | 2026-09-26 |
 | [ADR 009](#adr-009-scoped-npm-publication-dahchheimdall-with-provenance-and-bun-powered-github-actions-ci) | Scoped npm Publication (`@dahch/heimdall`) with Provenance and Bun-Powered GitHub Actions CI | **Accepted** | 2026-09-26 |
+| [ADR 010](#adr-010-integration-of-dnf-package-manager-for-fedorarhel-distributions) | Integration of DNF Package Manager for Fedora/RHEL Distributions | **Accepted** | 2026-10-09 |
 
 ---
 
@@ -264,3 +265,44 @@ All package queries are dispatched in parallel via `Promise.all` with a strict 3
 - **Consequences**:
   - Positive: Consistent organizational namespace with `@dahch/huginn`, cryptographic provenance verifiable on npmjs.com, and strict release verification.
   - Trade-off: Package installation uses the scoped name (`npm i -g @dahch/heimdall`), while terminal binary commands remain `hmd` and `heimdall`.
+
+---
+
+## ADR-010: Integration of DNF Package Manager for Fedora/RHEL Distributions
+
+- **Status**: Accepted
+- **Date**: 2026-10-09
+- **Context**:
+  RPM-based Linux distributions such as Fedora, Red Hat Enterprise Linux (RHEL), and CentOS Stream rely on **DNF** (Dandified YUM) as their core system package manager.
+  Integrating DNF into Heimdall's multi-manager architecture introduces four unique operational requirements:
+  1. **Non-Standard Exit Code Semantics in `check-update`**:
+     By specification, `dnf check-update` exits with status `100` when available updates are detected, and status `0` when the system is fully up to date. Standard process wrappers that treat non-zero exit codes as hard errors would erroneously report failed scans whenever packages are outdated. Any exit code other than `0` and `100` indicates a genuine repository or network failure.
+  2. **Metadata Freshness (`--refresh`)**:
+     DNF caches repository metadata locally. Running `dnf upgrade` without `--refresh` risks applying updates against stale repository state. Including `--refresh` forces repository metadata synchronization prior to upgrade evaluation.
+  3. **Non-Interactive Sudo Privileges**:
+     Mutative package operations (`upgrade`, `autoremove`) require elevated superuser privileges. Spawning `sudo dnf` without pre-verified credentials would cause the CLI to block or hang waiting on interactive password prompts inside `stdin: 'ignore'` subshells.
+  4. **Controlled Orphan Cleanup (`autoremove`) with Interactive Confirmation**:
+     While cleaning up orphaned dependencies (`sudo dnf autoremove`) is desirable after upgrades, running autoremove automatically without user consent can unintentionally remove packages in complex developer environments. Therefore, autoremove must be conditional: prompted interactively in TTY sessions via a `confirmAction` callback, executed automatically under `--yes` or simulated under `--dry-run`, and cleanly skipped (`status: 'skipped'`) when declined.
+- **Decision**:
+  1. **Implement `DnfManager`**: Created `DnfManager` in [`src/managers/linux.ts`](src/managers/linux.ts) extending `BasePackageManager`, with `id = 'dnf'`, `name = 'DNF (Fedora/RHEL)'`, `icon = '📦'`, and `category = 'system'`.
+  2. **Tolerate Exit Code 100 in `checkUpdates()`**:
+     Inspect `execRes.exitCode`. If `exitCode === 0`, return `updates: []`. If `exitCode === 100`, parse column output into `UpdateItem[]` with `type = 'rpm'`. For any other exit code, extract and report sanitized error diagnostics.
+     Handle wrapped long package names in DNF plaintext tables (`package.arch` on its own line followed by version and repository).
+  3. **Enforce Non-Interactive Sudo Verification**:
+     Prior to executing mutative steps, verify cached sudo credentials using `sudo -n true` (timeout 3000ms) when running as a non-root user (`process.getuid?.() !== 0`) and not in dry-run mode. If checks fail, abort fast with an actionable error message (`DNF requires sudo privileges. Run "sudo -v" before running hmd.`).
+  4. **Structure Two-Step Upgrade with Interactive `autoremove`**:
+     - Step 1: `sudo dnf upgrade -y --refresh`.
+     - Step 2: `sudo dnf autoremove -y`.
+       In `--dry-run`: simulated directly.
+       In live runs: queried via `options.confirmAction('Do you want to run sudo dnf autoremove to clean up orphaned packages?')`. In automated `--yes` mode, the CLI automatically approves `confirmAction`. If declined, step is marked `status: 'skipped'`.
+  5. **Extend `ExecutionOptions`**:
+     Added optional `confirmAction?: (message: string) => Promise<boolean>` callback to `ExecutionOptions` in [`src/types.ts`](src/types.ts), wired to `@clack/prompts` `p.confirm` in [`src/cli.ts`](src/cli.ts).
+- **Consequences**:
+  - **Positive**:
+    - Native, robust support for Fedora, RHEL, and CentOS Stream alongside Debian/Ubuntu APT.
+    - Zero false-positive scan failures due to exit code 100 handling.
+    - Safe metadata synchronization with `--refresh`.
+    - No terminal hangs or password prompt deadlocks due to `sudo -n true` verification.
+    - Flexible and safe dependency cleanup giving users final authority over `autoremove`.
+  - **Trade-offs / Mitigations**:
+    - `confirmAction` introduces interactive decision points into the execution phase for managers that declare optional steps. When `--yes` is specified, `confirmAction` short-circuits to `true` to preserve complete unattended non-interactivity.

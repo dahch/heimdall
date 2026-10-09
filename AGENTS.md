@@ -34,7 +34,7 @@ heimdall/
 │   │   ├── gem.ts            # RubyGems adapter (skips Apple system Ruby /usr/bin/gem)
 │   │   ├── macports.ts       # MacPorts adapter (sudo -n pre-checks, selfupdate)
 │   │   ├── mas.ts            # Mac App Store CLI adapter
-│   │   └── linux.ts          # Linux APT and Flatpak adapters
+│   │   └── linux.ts          # Linux APT, DNF, and Flatpak adapters
 │   └── utils/
 │       ├── exec.ts           # safeExec wrapper around execa, commandExists
 │       ├── error.ts          # Clean actionable error extractor (extractErrorMessage)
@@ -74,7 +74,7 @@ When modifying or extending the codebase, you **MUST** uphold the following rule
 
 ### 3.4 Explicit Sudo Pre-Verification
 - Never invoke `sudo <command>` directly without verifying non-interactive privileges beforehand.
-- Follow the pattern established in [`MacPortsManager`](src/managers/macports.ts#L96-L117) and [`AptManager`](src/managers/linux.ts#L90-L111):
+- Follow the pattern established in [`MacPortsManager`](src/managers/macports.ts#L96-L117), [`AptManager`](src/managers/linux.ts#L90-L111), and [`DnfManager`](src/managers/linux.ts#L383-L404):
   ```typescript
   if (!options.dryRun && process.getuid?.() !== 0) {
     const sudoCheck = await safeExec('sudo', ['-n', 'true'], { timeoutMs: 3000 });
