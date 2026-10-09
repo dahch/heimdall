@@ -10,7 +10,7 @@ import { CargoManager } from './cargo.js';
 import { RubyGemManager } from './gem.js';
 import { MacPortsManager } from './macports.js';
 import { MacAppStoreManager } from './mas.js';
-import { AptManager, FlatpakManager } from './linux.js';
+import { AptManager, DnfManager, FlatpakManager } from './linux.js';
 
 export function createDefaultManagers(): PackageManager[] {
   return [
@@ -26,6 +26,7 @@ export function createDefaultManagers(): PackageManager[] {
     new MacPortsManager(),
     new MacAppStoreManager(),
     new AptManager(),
+    new DnfManager(),
     new FlatpakManager(),
   ];
 }
