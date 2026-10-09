@@ -39,6 +39,7 @@ export interface ExecutionOptions {
   dryRun?: boolean;
   verbose?: boolean;
   timeoutMs?: number;
+  confirmAction?: (message: string) => Promise<boolean>;
   onStepStart?: (step: string) => void;
   onStepProgress?: (step: string, logLine: string) => void;
   onStepEnd?: (step: string, success: boolean, error?: string, durationMs?: number) => void;
