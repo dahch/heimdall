@@ -560,6 +560,398 @@ Done in 0.02s.
     });
   });
 
+  describe('DnfManager', () => {
+    it('reports availability based on commandExists', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      vi.spyOn(execUtils, 'commandExists').mockResolvedValue(true);
+      expect(await manager.isAvailable()).toBe(true);
+
+      vi.spyOn(execUtils, 'commandExists').mockResolvedValue(false);
+      expect(await manager.isAvailable()).toBe(false);
+    });
+
+    it('returns empty updates when exitCode is 0', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: 'Last metadata expiration check: 0:01:00 ago.\n',
+        stderr: '',
+        exitCode: 0,
+        success: true,
+        timedOut: false,
+      });
+
+      const result = await manager.checkUpdates();
+      expect(result.available).toBe(true);
+      expect(result.updates).toEqual([]);
+      expect(result.error).toBeUndefined();
+    });
+
+    it('parses exitCode 100 with single-line and split-line packages and ignores headers', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      const dnfOutput = `
+Updating and loading repositories:
+Repositories loaded.
+Last metadata expiration check: 0:42:15 ago on Thu 08 Oct 2026 12:00:00 PM UTC.
+
+curl.x86_64                                8.2.1-4.fc39                     updates
+kernel.x86_64                              6.5.6-300.fc39                   updates
+python3-cryptography.x86_64
+                                           41.0.4-1.fc39                    updates
+Obsoleting Packages
+old-tool.noarch                            1.0.0-1.fc39                     fedora
+      `;
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: dnfOutput,
+        stderr: '',
+        exitCode: 100,
+        success: false,
+        timedOut: false,
+      });
+
+      const result = await manager.checkUpdates();
+      expect(result.available).toBe(true);
+      expect(result.updates).toHaveLength(4);
+      expect(result.updates[0]).toEqual({
+        managerId: 'dnf',
+        managerName: 'DNF (Fedora/RHEL)',
+        name: 'curl',
+        currentVersion: 'installed',
+        latestVersion: '8.2.1-4.fc39',
+        type: 'rpm',
+        extra: 'updates (x86_64)',
+      });
+      expect(result.updates[1]).toEqual({
+        managerId: 'dnf',
+        managerName: 'DNF (Fedora/RHEL)',
+        name: 'kernel',
+        currentVersion: 'installed',
+        latestVersion: '6.5.6-300.fc39',
+        type: 'rpm',
+        extra: 'updates (x86_64)',
+      });
+      expect(result.updates[2]).toEqual({
+        managerId: 'dnf',
+        managerName: 'DNF (Fedora/RHEL)',
+        name: 'python3-cryptography',
+        currentVersion: 'installed',
+        latestVersion: '41.0.4-1.fc39',
+        type: 'rpm',
+        extra: 'updates (x86_64)',
+      });
+      expect(result.updates[3]).toEqual({
+        managerId: 'dnf',
+        managerName: 'DNF (Fedora/RHEL)',
+        name: 'old-tool',
+        currentVersion: 'installed',
+        latestVersion: '1.0.0-1.fc39',
+        type: 'rpm',
+        extra: 'fedora (noarch)',
+      });
+    });
+
+    it('returns error when check-update exits with code other than 0 and 100', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: '',
+        stderr: 'Error: Failed to download metadata for repo updates',
+        exitCode: 1,
+        success: false,
+        timedOut: false,
+      });
+
+      const result = await manager.checkUpdates();
+      expect(result.available).toBe(true);
+      expect(result.updates).toEqual([]);
+      expect(result.error).toContain('Failed to download metadata');
+    });
+
+    it('returns available: false when manager binary is not found', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(false);
+
+      const result = await manager.checkUpdates();
+      expect(result.available).toBe(false);
+      expect(result.updates).toEqual([]);
+    });
+
+    it('catches and reports unexpected Error exceptions during checkUpdates', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockRejectedValue(new Error('Subprocess spawn failure'));
+
+      const result = await manager.checkUpdates();
+      expect(result.available).toBe(true);
+      expect(result.updates).toEqual([]);
+      expect(result.error).toBe('Subprocess spawn failure');
+      expect(result.durationMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('catches and reports non-Error thrown values during checkUpdates', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockRejectedValue('Critical low-level crash');
+
+      const result = await manager.checkUpdates();
+      expect(result.available).toBe(true);
+      expect(result.updates).toEqual([]);
+      expect(result.error).toBe('Critical low-level crash');
+    });
+
+    it('passes custom timeout option to safeExec during checkUpdates', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      const execSpy = vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        success: true,
+        timedOut: false,
+      });
+
+      await manager.checkUpdates({ timeoutMs: 12000 });
+      expect(execSpy).toHaveBeenCalledWith('dnf', ['check-update', '-y'], { timeoutMs: 12000 });
+    });
+
+    it('falls back to default exitCode error message when stderr and stdout are empty', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 2,
+        success: false,
+        timedOut: false,
+      });
+
+      const result = await manager.checkUpdates();
+      expect(result.available).toBe(true);
+      expect(result.updates).toEqual([]);
+      expect(result.error).toBe('dnf check-update failed with code 2');
+    });
+
+    it('resets pending package when a wrapped line is followed by an unmatched line', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      const dnfOutput = `
+orphan-package.x86_64
+invalid_line
+valid-pkg.x86_64 1.2.3-1.fc39 updates
+      `;
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: dnfOutput,
+        stderr: '',
+        exitCode: 100,
+        success: false,
+        timedOut: false,
+      });
+
+      const result = await manager.checkUpdates();
+      expect(result.updates).toHaveLength(1);
+      expect(result.updates[0].name).toBe('valid-pkg');
+      expect(result.updates[0].latestVersion).toBe('1.2.3-1.fc39');
+    });
+
+    it('aborts executeUpdate if sudo privileges check fails', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        if (cmd === 'sudo' && args?.[0] === '-n') {
+          return { stdout: '', stderr: 'sudo: a password is required', exitCode: 1, success: false, timedOut: false };
+        }
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const result = await manager.executeUpdate(
+        [{ managerId: 'dnf', managerName: 'DNF', name: 'curl', currentVersion: 'installed', latestVersion: '8.2.1-4.fc39' }],
+        { dryRun: false }
+      );
+      expect(result.success).toBe(false);
+      expect(result.updatedCount).toBe(0);
+      expect(result.error).toBe('DNF requires sudo privileges. Run "sudo -v" before running hmd.');
+      expect(result.steps).toEqual([
+        {
+          name: 'sudo privileges',
+          command: 'sudo -n true',
+          status: 'failed',
+          error: 'DNF requires sudo privileges. Run "sudo -v" before running hmd.',
+        },
+      ]);
+    });
+
+    it('skips sudo privileges check during executeUpdate when running as root (UID 0)', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      const originalGetuid = process.getuid;
+      try {
+        process.getuid = () => 0;
+        const executedCommands: string[] = [];
+        vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+          executedCommands.push(`${cmd} ${(args ?? []).join(' ')}`);
+          return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+        });
+
+        const result = await manager.executeUpdate(
+          [{ managerId: 'dnf', managerName: 'DNF', name: 'curl', currentVersion: 'installed', latestVersion: '8.2.1-4.fc39' }],
+          { dryRun: false }
+        );
+
+        expect(result.success).toBe(true);
+        expect(executedCommands).toEqual(['sudo dnf upgrade -y --refresh']);
+      } finally {
+        process.getuid = originalGetuid;
+      }
+    });
+
+    it('simulates upgrade and autoremove in dry-run mode', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      const execSpy = vi.spyOn(execUtils, 'safeExec');
+
+      const result = await manager.executeUpdate(
+        [{ managerId: 'dnf', managerName: 'DNF', name: 'curl', currentVersion: 'installed', latestVersion: '8.2.1-4.fc39' }],
+        { dryRun: true }
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(1);
+      expect(result.steps).toHaveLength(2);
+      expect(result.steps[0].name).toBe('sudo dnf upgrade --refresh');
+      expect(result.steps[0].status).toBe('success');
+      expect(result.steps[1].name).toBe('sudo dnf autoremove');
+      expect(result.steps[1].status).toBe('success');
+      expect(execSpy).not.toHaveBeenCalled();
+    });
+
+    it('executes autoremove when confirmAction resolves to true', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      const executedCommands: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executedCommands.push(`${cmd} ${(args ?? []).join(' ')}`);
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const confirmAction = vi.fn().mockResolvedValue(true);
+      const result = await manager.executeUpdate(
+        [{ managerId: 'dnf', managerName: 'DNF', name: 'curl', currentVersion: 'installed', latestVersion: '8.2.1-4.fc39' }],
+        { dryRun: false, confirmAction }
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(1);
+      expect(confirmAction).toHaveBeenCalledWith(
+        'Do you want to run sudo dnf autoremove to clean up orphaned packages?'
+      );
+      expect(executedCommands).toEqual([
+        'sudo -n true',
+        'sudo dnf upgrade -y --refresh',
+        'sudo dnf autoremove -y',
+      ]);
+      expect(result.steps).toHaveLength(2);
+      expect(result.steps[0].status).toBe('success');
+      expect(result.steps[1].status).toBe('success');
+    });
+
+    it('skips autoremove when confirmAction resolves to false', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      const executedCommands: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executedCommands.push(`${cmd} ${(args ?? []).join(' ')}`);
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const confirmAction = vi.fn().mockResolvedValue(false);
+      const result = await manager.executeUpdate(
+        [{ managerId: 'dnf', managerName: 'DNF', name: 'curl', currentVersion: 'installed', latestVersion: '8.2.1-4.fc39' }],
+        { dryRun: false, confirmAction }
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(1);
+      expect(confirmAction).toHaveBeenCalled();
+      expect(executedCommands).toEqual([
+        'sudo -n true',
+        'sudo dnf upgrade -y --refresh',
+      ]);
+      expect(result.steps).toHaveLength(2);
+      expect(result.steps[0].name).toBe('sudo dnf upgrade --refresh');
+      expect(result.steps[0].status).toBe('success');
+      expect(result.steps[1].name).toBe('sudo dnf autoremove');
+      expect(result.steps[1].status).toBe('skipped');
+    });
+
+    it('skips autoremove by default when confirmAction is not provided', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      const executedCommands: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executedCommands.push(`${cmd} ${(args ?? []).join(' ')}`);
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const result = await manager.executeUpdate(
+        [{ managerId: 'dnf', managerName: 'DNF', name: 'curl', currentVersion: 'installed', latestVersion: '8.2.1-4.fc39' }],
+        { dryRun: false }
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(1);
+      expect(executedCommands).toEqual([
+        'sudo -n true',
+        'sudo dnf upgrade -y --refresh',
+      ]);
+      expect(result.steps[1].status).toBe('skipped');
+    });
+
+    it('fails executeUpdate when upgrade step fails and skips autoremove', async () => {
+      const { DnfManager } = await import('../src/managers/linux.js');
+      const manager = new DnfManager();
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        if (cmd === 'sudo' && args?.[0] === '-n') {
+          return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+        }
+        if (cmd === 'sudo' && args?.[1] === 'upgrade') {
+          return { stdout: '', stderr: 'Transaction failed: conflict detected', exitCode: 1, success: false, timedOut: false };
+        }
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const confirmAction = vi.fn();
+      const result = await manager.executeUpdate(
+        [{ managerId: 'dnf', managerName: 'DNF', name: 'curl', currentVersion: 'installed', latestVersion: '8.2.1-4.fc39' }],
+        { dryRun: false, confirmAction }
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.updatedCount).toBe(0);
+      expect(result.error).toContain('conflict detected');
+      expect(confirmAction).not.toHaveBeenCalled();
+      expect(result.steps[1].status).toBe('skipped');
+    });
+
+    it('is registered in default managers factory', async () => {
+      const { createDefaultManagers } = await import('../src/managers/registry.js');
+      const managers = createDefaultManagers();
+      const dnf = managers.find((m) => m.id === 'dnf');
+      expect(dnf).toBeDefined();
+      expect(dnf?.name).toBe('DNF (Fedora/RHEL)');
+    });
+  });
+
   describe('HomebrewManager.executeUpdate selective updates', () => {
     it('executes brew upgrade --cask when only casks are pending', async () => {
       const manager = new HomebrewManager();
