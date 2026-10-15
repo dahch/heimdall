@@ -61,6 +61,7 @@ export interface PackageManager {
   readonly name: string;
   readonly icon: string;
   readonly category: ManagerCategory;
+  readonly requiresSudo?: boolean;
 
   isAvailable(): Promise<boolean>;
   checkUpdates(options?: CheckOptions): Promise<CheckResult>;

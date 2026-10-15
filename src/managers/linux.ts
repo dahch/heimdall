@@ -1,5 +1,5 @@
 import { BasePackageManager } from './base.js';
-import { safeExec } from '../utils/exec.js';
+import { safeExec, SUDO_REQUIRED_HINT } from '../utils/exec.js';
 import { extractErrorMessage } from '../utils/formatting.js';
 import type {
   ManagerCategory,
@@ -16,6 +16,7 @@ export class AptManager extends BasePackageManager {
   readonly name = 'APT (Debian/Ubuntu)';
   readonly icon = '🐧';
   readonly category: ManagerCategory = 'system';
+  readonly requiresSudo = true;
   protected readonly binary = 'apt-get';
 
   async checkUpdates(options?: CheckOptions): Promise<CheckResult> {
@@ -89,8 +90,8 @@ export class AptManager extends BasePackageManager {
 
     // Check sudo privileges beforehand to avoid hanging on password prompts
     if (!options.dryRun && process.getuid?.() !== 0) {
-      const sudoCheck = await safeExec('sudo', ['-n', 'true'], { timeoutMs: 3000 });
-      if (!sudoCheck.success) {
+      if (!(await this.hasPasswordlessSudo())) {
+        const error = `APT requires sudo privileges. ${SUDO_REQUIRED_HINT}`;
         return {
           managerId: this.id,
           managerName: this.name,
@@ -103,10 +104,10 @@ export class AptManager extends BasePackageManager {
               name: 'sudo privileges',
               command: 'sudo -n true',
               status: 'failed',
-              error: 'APT requires sudo privileges. Run "sudo -v" in your terminal before hmd.',
+              error,
             },
           ],
-          error: 'APT requires sudo privileges. Run "sudo -v" before running hmd.',
+          error,
         };
       }
     }
@@ -255,6 +256,7 @@ export class DnfManager extends BasePackageManager {
   readonly name = 'DNF (Fedora/RHEL)';
   readonly icon = '📦';
   readonly category: ManagerCategory = 'system';
+  readonly requiresSudo = true;
   protected readonly binary = 'dnf';
 
   async checkUpdates(options?: CheckOptions): Promise<CheckResult> {
@@ -381,8 +383,8 @@ export class DnfManager extends BasePackageManager {
 
     // Verify non-interactive sudo privileges beforehand
     if (!options.dryRun && process.getuid?.() !== 0) {
-      const sudoCheck = await safeExec('sudo', ['-n', 'true'], { timeoutMs: 3000 });
-      if (!sudoCheck.success) {
+      if (!(await this.hasPasswordlessSudo())) {
+        const error = `DNF requires sudo privileges. ${SUDO_REQUIRED_HINT}`;
         return {
           managerId: this.id,
           managerName: this.name,
@@ -395,10 +397,10 @@ export class DnfManager extends BasePackageManager {
               name: 'sudo privileges',
               command: 'sudo -n true',
               status: 'failed',
-              error: 'DNF requires sudo privileges. Run "sudo -v" before running hmd.',
+              error,
             },
           ],
-          error: 'DNF requires sudo privileges. Run "sudo -v" before running hmd.',
+          error,
         };
       }
     }

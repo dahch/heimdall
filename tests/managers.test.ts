@@ -780,13 +780,14 @@ valid-pkg.x86_64 1.2.3-1.fc39 updates
       );
       expect(result.success).toBe(false);
       expect(result.updatedCount).toBe(0);
-      expect(result.error).toBe('DNF requires sudo privileges. Run "sudo -v" before running hmd.');
+      expect(result.error).toContain('DNF requires sudo privileges');
+      expect(result.error).toContain('Run "sudo -v" in this terminal and retry');
       expect(result.steps).toEqual([
         {
           name: 'sudo privileges',
           command: 'sudo -n true',
           status: 'failed',
-          error: 'DNF requires sudo privileges. Run "sudo -v" before running hmd.',
+          error: result.error,
         },
       ]);
     });

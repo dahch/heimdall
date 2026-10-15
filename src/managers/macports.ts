@@ -1,5 +1,5 @@
 import { BasePackageManager } from './base.js';
-import { safeExec } from '../utils/exec.js';
+import { safeExec, SUDO_REQUIRED_HINT } from '../utils/exec.js';
 import type {
   ManagerCategory,
   CheckOptions,
@@ -15,6 +15,7 @@ export class MacPortsManager extends BasePackageManager {
   readonly name = 'MacPorts';
   readonly icon = '⚓';
   readonly category: ManagerCategory = 'system';
+  readonly requiresSudo = true;
   protected readonly binary = 'port';
 
   async checkUpdates(options?: CheckOptions): Promise<CheckResult> {
@@ -94,8 +95,8 @@ export class MacPortsManager extends BasePackageManager {
 
     // Check sudo privileges beforehand to avoid hanging 3 minutes on password prompts
     if (!options.dryRun && process.getuid?.() !== 0) {
-      const sudoCheck = await safeExec('sudo', ['-n', 'true'], { timeoutMs: 3000 });
-      if (!sudoCheck.success) {
+      if (!(await this.hasPasswordlessSudo())) {
+        const error = `MacPorts requires sudo privileges. ${SUDO_REQUIRED_HINT}`;
         return {
           managerId: this.id,
           managerName: this.name,
@@ -108,10 +109,10 @@ export class MacPortsManager extends BasePackageManager {
               name: 'sudo privileges',
               command: 'sudo -n true',
               status: 'failed',
-              error: 'MacPorts requires sudo privileges. Run "sudo -v" in your terminal before hmd.',
+              error,
             },
           ],
-          error: 'MacPorts requires sudo privileges. Run "sudo -v" before running hmd.',
+          error,
         };
       }
     }

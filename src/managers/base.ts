@@ -22,6 +22,15 @@ export abstract class BasePackageManager implements PackageManager {
     return commandExists(this.binary);
   }
 
+  /**
+   * Verifies that sudo can run without a password prompt (cached ticket or NOPASSWD rule),
+   * so privileged steps fail fast instead of hanging inside a stdin-less subprocess.
+   */
+  protected async hasPasswordlessSudo(): Promise<boolean> {
+    const result = await safeExec('sudo', ['-n', 'true'], { timeoutMs: 3000 });
+    return result.success;
+  }
+
   abstract checkUpdates(options?: CheckOptions): Promise<CheckResult>;
 
   abstract executeUpdate(

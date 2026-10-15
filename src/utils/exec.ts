@@ -33,6 +33,40 @@ export async function commandExists(command: string): Promise<boolean> {
   }
 }
 
+export const SUDO_REQUIRED_HINT =
+  'Run "sudo -v" in this terminal and retry ("sudo hmd" will not work: hmd is not in root\'s PATH).';
+
+/**
+ * Ensures elevated privileges, prompting for the password on the controlling terminal when
+ * no cached ticket exists. Never throws: returns false when privileges are unavailable.
+ */
+export async function ensureSudo(): Promise<boolean> {
+  if (process.getuid?.() === 0) return true;
+
+  const cachedTicket = await safeExec('sudo', ['-n', 'true'], { timeoutMs: 5000 });
+  if (cachedTicket.success) return true;
+  if (!process.stdin.isTTY || !(await commandExists('sudo'))) return false;
+
+  try {
+    const result = await execa('sudo', ['-v'], { stdio: 'inherit', reject: false });
+    return result.exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Periodically refreshes the cached sudo ticket so long-running updates never stall on a
+ * password prompt mid-step. Returns a stop function.
+ */
+export function startSudoKeepAlive(intervalMs = 60000): () => void {
+  const timer = setInterval(() => {
+    void safeExec('sudo', ['-n', '-v'], { timeoutMs: 10000 });
+  }, intervalMs);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
 /**
  * Runs a command safely with timeout and optional output streaming.
  * Catches all rejections so callers don't need boilerplate try/catch.

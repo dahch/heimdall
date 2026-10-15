@@ -5,7 +5,8 @@ import { createDefaultManagers, filterManagers } from './managers/registry.js';
 import { UpdaterEngine } from './core/engine.js';
 import { renderUpdatesTable, renderExecutionSummary, formatDuration } from './utils/formatting.js';
 import { getPackageMetadata } from './utils/version.js';
-import type { UpdateItem } from './types.js';
+import { ensureSudo, startSudoKeepAlive } from './utils/exec.js';
+import type { GlobalSummary, UpdateItem } from './types.js';
 
 interface CliOptions {
   yes?: boolean;
@@ -177,8 +178,27 @@ async function main() {
     process.exit(0);
   }
 
-  // Stage 4: Animated Execution with Real-Time Feedback
+  // Stage 3.5: Privilege Acquisition (interactive sudo, requested before any spinner owns the TTY)
   const isSimulated = options.dryRun ?? false;
+  let stopSudoKeepAlive: (() => void) | undefined;
+
+  const selectedIds = new Set(managersToUpdate);
+  const needsSudo = selectedManagers.some((m) => selectedIds.has(m.id) && m.requiresSudo);
+
+  if (needsSudo && !isSimulated) {
+    p.log.step(pc.dim('Requesting sudo privileges required by system package managers...'));
+    if (await ensureSudo()) {
+      stopSudoKeepAlive = startSudoKeepAlive();
+    } else {
+      p.log.warn(
+        pc.yellow(
+          'Sudo privileges not granted: system package managers will fail. Run "sudo -v" in this terminal and retry.'
+        )
+      );
+    }
+  }
+
+  // Stage 4: Animated Execution with Real-Time Feedback
   p.log.step(
     pc.bold(
       pc.cyan(
@@ -190,49 +210,54 @@ async function main() {
   const updateSpinner = p.spinner();
   let managerIndex = 0;
 
-  const summary = await engine.execute(
-    managersToUpdate,
-    itemsByManager,
-    {
-      verbose: options.verbose,
-      dryRun: isSimulated,
-      confirmAction: async (message: string) => {
-        if (options.yes) return true;
-        updateSpinner.stop(pc.dim('Waiting for user confirmation...'));
-        const confirmed = await p.confirm({ message, initialValue: false });
-        updateSpinner.start(pc.dim('Continuing update...'));
-        return typeof confirmed === 'boolean' ? confirmed : false;
+  let summary: GlobalSummary;
+  try {
+    summary = await engine.execute(
+      managersToUpdate,
+      itemsByManager,
+      {
+        verbose: options.verbose,
+        dryRun: isSimulated,
+        confirmAction: async (message: string) => {
+          if (options.yes) return true;
+          updateSpinner.stop(pc.dim('Waiting for user confirmation...'));
+          const confirmed = await p.confirm({ message, initialValue: false });
+          updateSpinner.start(pc.dim('Continuing update...'));
+          return typeof confirmed === 'boolean' ? confirmed : false;
+        },
+        onStepStart: (stepName) => {
+          updateSpinner.message(pc.dim(`Running: ${stepName}...`));
+        },
+        onStepProgress: (stepName, logLine) => {
+          if (logLine) {
+            const truncated = logLine.length > 55 ? logLine.slice(0, 52) + '...' : logLine;
+            updateSpinner.message(pc.dim(`${stepName} [${truncated}]`));
+          }
+        },
+        onStepEnd: (stepName, success, error, durationMs) => {
+          const mark = success ? pc.green('✔') : pc.red('✖');
+          const durStr = durationMs !== undefined ? pc.dim(` [${formatDuration(durationMs)}]`) : '';
+          const detail = error ? pc.red(` ↳ ${error.split('\n')[0]}`) : '';
+          updateSpinner.stop(`  ${mark} ${pc.dim(stepName)}${durStr}${detail}`);
+          updateSpinner.start(pc.dim('Working...'));
+        },
       },
-      onStepStart: (stepName) => {
-        updateSpinner.message(pc.dim(`Running: ${stepName}...`));
+      (mgr) => {
+        managerIndex++;
+        console.log(pc.bold(pc.cyan(`\n● [${managerIndex}/${managersToUpdate.length}] ${mgr.icon} ${mgr.name}`)));
+        updateSpinner.start(pc.dim('Starting update routine...'));
       },
-      onStepProgress: (stepName, logLine) => {
-        if (logLine) {
-          const truncated = logLine.length > 55 ? logLine.slice(0, 52) + '...' : logLine;
-          updateSpinner.message(pc.dim(`${stepName} [${truncated}]`));
+      (mgr, res) => {
+        if (res.success) {
+          updateSpinner.stop(pc.green(`  ✔ ${mgr.name} completed in ${formatDuration(res.durationMs)}`));
+        } else {
+          updateSpinner.stop(pc.red(`  ✖ ${mgr.name} completed with issues in ${formatDuration(res.durationMs)}`));
         }
-      },
-      onStepEnd: (stepName, success, error, durationMs) => {
-        const mark = success ? pc.green('✔') : pc.red('✖');
-        const durStr = durationMs !== undefined ? pc.dim(` [${formatDuration(durationMs)}]`) : '';
-        const detail = error ? pc.red(` ↳ ${error.split('\n')[0]}`) : '';
-        updateSpinner.stop(`  ${mark} ${pc.dim(stepName)}${durStr}${detail}`);
-        updateSpinner.start(pc.dim('Working...'));
-      },
-    },
-    (mgr) => {
-      managerIndex++;
-      console.log(pc.bold(pc.cyan(`\n● [${managerIndex}/${managersToUpdate.length}] ${mgr.icon} ${mgr.name}`)));
-      updateSpinner.start(pc.dim('Starting update routine...'));
-    },
-    (mgr, res) => {
-      if (res.success) {
-        updateSpinner.stop(pc.green(`  ✔ ${mgr.name} completed in ${formatDuration(res.durationMs)}`));
-      } else {
-        updateSpinner.stop(pc.red(`  ✖ ${mgr.name} completed with issues in ${formatDuration(res.durationMs)}`));
       }
-    }
-  );
+    );
+  } finally {
+    stopSudoKeepAlive?.();
+  }
 
   // Stage 5: Final Summary
   console.log(renderExecutionSummary(summary.results));
