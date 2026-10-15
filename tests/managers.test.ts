@@ -950,6 +950,151 @@ valid-pkg.x86_64 1.2.3-1.fc39 updates
       const dnf = managers.find((m) => m.id === 'dnf');
       expect(dnf).toBeDefined();
       expect(dnf?.name).toBe('DNF (Fedora/RHEL)');
+      expect(dnf?.requiresSudo).toBe(true);
+    });
+  });
+
+  describe('FlatpakManager', () => {
+    const flatpakItem = {
+      managerId: 'flatpak',
+      managerName: 'Flatpak',
+      name: 'org.mozilla.firefox',
+      currentVersion: 'installed',
+      latestVersion: '155.0',
+      type: 'flatpak',
+    };
+
+    const withNonRootUid = async <T>(fn: () => Promise<T>): Promise<T> => {
+      const originalGetuid = process.getuid;
+      process.getuid = () => 1000;
+      try {
+        return await fn();
+      } finally {
+        process.getuid = originalGetuid;
+      }
+    };
+
+    it('queries both installation scopes and deduplicates shared refs', async () => {
+      const { FlatpakManager } = await import('../src/managers/linux.js');
+      const manager = new FlatpakManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      const execSpy = vi.spyOn(execUtils, 'safeExec').mockImplementation(async (_cmd, args) => {
+        if (args?.includes('--user')) {
+          return {
+            stdout: 'org.mozilla.firefox 155.0\norg.gnome.Calculator 46.1\n',
+            stderr: '',
+            exitCode: 0,
+            success: true,
+            timedOut: false,
+          };
+        }
+        return { stdout: 'org.mozilla.firefox 155.0\n', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const result = await manager.checkUpdates();
+
+      expect(result.available).toBe(true);
+      expect(result.error).toBeUndefined();
+      expect(result.updates.map((u) => u.name)).toEqual(['org.mozilla.firefox', 'org.gnome.Calculator']);
+      expect(execSpy).toHaveBeenCalledWith('flatpak', ['remote-ls', '--user', '--updates'], expect.any(Object));
+      expect(execSpy).toHaveBeenCalledWith('flatpak', ['remote-ls', '--system', '--updates'], expect.any(Object));
+    });
+
+    it('reports an error when both scope queries fail', async () => {
+      const { FlatpakManager } = await import('../src/managers/linux.js');
+      const manager = new FlatpakManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: '',
+        stderr: 'error: No installations found',
+        exitCode: 1,
+        success: false,
+        timedOut: false,
+      });
+
+      const result = await manager.checkUpdates();
+      expect(result.available).toBe(true);
+      expect(result.updates).toEqual([]);
+      expect(result.error).toContain('No installations found');
+    });
+
+    it('updates user and system scopes when sudo credentials are cached', async () => {
+      const { FlatpakManager } = await import('../src/managers/linux.js');
+      const manager = new FlatpakManager();
+      const executed: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executed.push(`${cmd} ${(args ?? []).join(' ')}`);
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const result = await withNonRootUid(() => manager.executeUpdate([flatpakItem], { dryRun: false }));
+
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(1);
+      expect(result.error).toBeUndefined();
+      expect(executed).toEqual([
+        'flatpak update --user -y --noninteractive',
+        'sudo -n true',
+        'sudo flatpak update --system -y --noninteractive',
+      ]);
+      expect(result.steps.map((s) => s.status)).toEqual(['success', 'success']);
+    });
+
+    it('fails the system step when sudo is unavailable and system apps are installed', async () => {
+      const { FlatpakManager } = await import('../src/managers/linux.js');
+      const manager = new FlatpakManager();
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        if (cmd === 'sudo') {
+          return { stdout: '', stderr: 'sudo: a password is required', exitCode: 1, success: false, timedOut: false };
+        }
+        if (args?.includes('list')) {
+          return { stdout: 'org.mozilla.firefox\n', stderr: '', exitCode: 0, success: true, timedOut: false };
+        }
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const result = await withNonRootUid(() => manager.executeUpdate([flatpakItem], { dryRun: false }));
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('System-wide Flatpak updates require sudo privileges');
+      expect(result.steps[0].status).toBe('success');
+      expect(result.steps[1].status).toBe('failed');
+      expect(result.steps[1].name).toBe('sudo flatpak update --system');
+    });
+
+    it('skips the system step when no system-scope apps exist', async () => {
+      const { FlatpakManager } = await import('../src/managers/linux.js');
+      const manager = new FlatpakManager();
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        if (cmd === 'sudo') {
+          return { stdout: '', stderr: 'sudo: a password is required', exitCode: 1, success: false, timedOut: false };
+        }
+        if (args?.includes('list')) {
+          return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+        }
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const result = await withNonRootUid(() => manager.executeUpdate([flatpakItem], { dryRun: false }));
+
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(1);
+      expect(result.steps[0].status).toBe('success');
+      expect(result.steps[1].status).toBe('skipped');
+    });
+
+    it('simulates both scopes in dry-run mode without executing commands', async () => {
+      const { FlatpakManager } = await import('../src/managers/linux.js');
+      const manager = new FlatpakManager();
+      const execSpy = vi.spyOn(execUtils, 'safeExec');
+
+      const result = await manager.executeUpdate([flatpakItem], { dryRun: true });
+
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(1);
+      expect(result.steps.map((s) => s.name)).toEqual(['flatpak update --user', 'sudo flatpak update --system']);
+      expect(result.steps.every((s) => s.status === 'success')).toBe(true);
+      expect(execSpy).not.toHaveBeenCalled();
     });
   });
 

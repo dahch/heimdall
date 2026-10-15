@@ -159,6 +159,7 @@ export class FlatpakManager extends BasePackageManager {
   readonly name = 'Flatpak';
   readonly icon = '📦';
   readonly category: ManagerCategory = 'system';
+  readonly requiresSudo = true;
   protected readonly binary = 'flatpak';
 
   async checkUpdates(options?: CheckOptions): Promise<CheckResult> {
@@ -177,25 +178,48 @@ export class FlatpakManager extends BasePackageManager {
     }
 
     try {
-      const execRes = await safeExec('flatpak', ['remote-ls', '--updates'], {
-        timeoutMs: options?.timeoutMs ?? 20000,
-      });
+      const timeoutMs = options?.timeoutMs ?? 20000;
 
-      const updates: UpdateItem[] = [];
-      const lines = execRes.stdout.split('\n');
+      // Both installation scopes are queried: a system-only listing hides user-scoped apps
+      const [userRes, systemRes] = await Promise.all([
+        safeExec('flatpak', ['remote-ls', '--user', '--updates'], { timeoutMs }),
+        safeExec('flatpak', ['remote-ls', '--system', '--updates'], { timeoutMs }),
+      ]);
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const parts = trimmed.split(/\s+/);
-        updates.push({
+      if (!userRes.success && !systemRes.success) {
+        const raw = (systemRes.stderr || userRes.stderr).trim();
+        return {
           managerId: this.id,
           managerName: this.name,
-          name: parts[0],
-          currentVersion: 'installed',
-          latestVersion: parts[1] ?? 'latest',
-          type: 'flatpak',
-        });
+          icon: this.icon,
+          category: this.category,
+          available: true,
+          updates: [],
+          durationMs: Date.now() - startTime,
+          error: raw ? extractErrorMessage(raw) : undefined,
+        };
+      }
+
+      const updates: UpdateItem[] = [];
+      const seen = new Set<string>();
+
+      for (const execRes of [userRes, systemRes]) {
+        for (const line of execRes.stdout.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const parts = trimmed.split(/\s+/);
+          const name = parts[0];
+          if (seen.has(name)) continue;
+          seen.add(name);
+          updates.push({
+            managerId: this.id,
+            managerName: this.name,
+            name,
+            currentVersion: 'installed',
+            latestVersion: parts[1] ?? 'latest',
+            type: 'flatpak',
+          });
+        }
       }
 
       return {
@@ -221,6 +245,13 @@ export class FlatpakManager extends BasePackageManager {
     }
   }
 
+  private async hasSystemScopeApps(): Promise<boolean> {
+    const result = await safeExec('flatpak', ['list', '--system', '--columns=application'], {
+      timeoutMs: 10000,
+    });
+    return result.success && result.stdout.trim().length > 0;
+  }
+
   async executeUpdate(
     items: UpdateItem[],
     options: ExecutionOptions
@@ -228,15 +259,52 @@ export class FlatpakManager extends BasePackageManager {
     const startTime = Date.now();
     const steps: UpdateStep[] = [];
 
-    const updateStep = await this.executeStep(
-      'flatpak update -y',
+    // Step 1: user installation (never requires elevation)
+    const userStep = await this.executeStep(
+      'flatpak update --user',
       'flatpak',
-      ['update', '-y', '--noninteractive'],
+      ['update', '--user', '-y', '--noninteractive'],
       options
     );
-    steps.push(updateStep);
+    steps.push(userStep);
 
-    const success = steps.every((s) => s.status === 'success');
+    // Step 2: system installation (requires root; polkit agents are unavailable in a pipe)
+    const sudoStepName = 'sudo flatpak update --system';
+    const sudoStepCommand = 'sudo flatpak update --system -y --noninteractive';
+
+    if (options.dryRun) {
+      const systemStep = await this.executeStep(
+        sudoStepName,
+        'sudo',
+        ['flatpak', 'update', '--system', '-y', '--noninteractive'],
+        options
+      );
+      steps.push(systemStep);
+    } else if (process.getuid?.() === 0 || (await this.hasPasswordlessSudo())) {
+      const systemStep = await this.executeStep(
+        sudoStepName,
+        'sudo',
+        ['flatpak', 'update', '--system', '-y', '--noninteractive'],
+        options
+      );
+      steps.push(systemStep);
+    } else if (await this.hasSystemScopeApps()) {
+      steps.push({
+        name: sudoStepName,
+        command: sudoStepCommand,
+        status: 'failed',
+        error: `System-wide Flatpak updates require sudo privileges. ${SUDO_REQUIRED_HINT}`,
+      });
+    } else {
+      steps.push({
+        name: sudoStepName,
+        command: sudoStepCommand,
+        status: 'skipped',
+      });
+    }
+
+    const executedSteps = steps.filter((s) => s.status !== 'skipped');
+    const success = executedSteps.length > 0 && executedSteps.every((s) => s.status === 'success');
 
     return {
       managerId: this.id,
