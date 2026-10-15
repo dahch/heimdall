@@ -121,25 +121,63 @@ export class AptManager extends BasePackageManager {
     );
     steps.push(updateStep);
 
-    // Step 2: sudo apt-get upgrade
+    // Step 2: sudo apt-get upgrade --with-new-pkgs
+    // Without --with-new-pkgs, every upgrade that pulls in new dependencies stays "kept back"
+    // and the summary would claim success while packages remain outdated.
     const upgradeStep = await this.executeStep(
       'sudo apt-get upgrade',
       'sudo',
-      ['apt-get', 'upgrade', '-y'],
+      ['apt-get', 'upgrade', '-y', '--with-new-pkgs'],
       options
     );
     steps.push(upgradeStep);
 
-    // Step 3: sudo apt-get autoremove
-    const cleanupStep = await this.executeStep(
-      'sudo apt-get autoremove',
-      'sudo',
-      ['apt-get', 'autoremove', '-y'],
-      options
-    );
-    steps.push(cleanupStep);
+    // Step 3: Conditional autoremove (never after a failed upgrade)
+    if (upgradeStep.status === 'success') {
+      if (options.dryRun) {
+        const autoremoveStep = await this.executeStep(
+          'sudo apt-get autoremove',
+          'sudo',
+          ['apt-get', 'autoremove', '-y'],
+          options
+        );
+        steps.push(autoremoveStep);
+      } else if (options.confirmAction) {
+        const shouldAutoremove = await options.confirmAction(
+          'Do you want to run sudo apt-get autoremove to clean up orphaned packages?'
+        );
+        if (shouldAutoremove) {
+          const autoremoveStep = await this.executeStep(
+            'sudo apt-get autoremove',
+            'sudo',
+            ['apt-get', 'autoremove', '-y'],
+            options
+          );
+          steps.push(autoremoveStep);
+        } else {
+          steps.push({
+            name: 'sudo apt-get autoremove',
+            command: 'sudo apt-get autoremove -y',
+            status: 'skipped',
+          });
+        }
+      } else {
+        steps.push({
+          name: 'sudo apt-get autoremove',
+          command: 'sudo apt-get autoremove -y',
+          status: 'skipped',
+        });
+      }
+    } else {
+      steps.push({
+        name: 'sudo apt-get autoremove',
+        command: 'sudo apt-get autoremove -y',
+        status: 'skipped',
+      });
+    }
 
-    const success = steps.every((s) => s.status === 'success');
+    const executedSteps = steps.filter((s) => s.status !== 'skipped');
+    const success = executedSteps.length > 0 && executedSteps.every((s) => s.status === 'success');
 
     return {
       managerId: this.id,

@@ -181,7 +181,7 @@ export interface PackageManager {
 | `gem` | Ruby Gem | `language` | `gem` | Cross-platform | `gem` | `gem outdated` | `gem update --user-install` + `gem cleanup` |
 | `macports` | MacPorts | `system` | `port` | macOS | `port` | `port outdated` | `sudo port selfupdate` + `sudo port upgrade outdated` |
 | `mas` | Mac App Store | `appstore` | `mas` | macOS | `mas-app` | `mas outdated` | `mas upgrade` |
-| `apt` | APT | `system` | `apt` / `apt-get` | Linux (Debian, Ubuntu) | `deb` | `apt list --upgradable` | `sudo apt-get update` + `upgrade` + `autoremove` |
+| `apt` | APT | `system` | `apt` / `apt-get` | Linux (Debian, Ubuntu) | `deb` | `apt list --upgradable` | `sudo apt-get update` + `sudo apt-get upgrade -y --with-new-pkgs` + conditional `sudo apt-get autoremove -y` |
 | `dnf` | DNF (Fedora/RHEL) | `system` | `dnf` | Linux (Fedora, RHEL, CentOS) | `rpm` | `dnf check-update -y` (exit code 100) | `sudo dnf upgrade -y --refresh` + conditional `sudo dnf autoremove -y` |
 | `flatpak` | Flatpak | `system` | `flatpak` | Linux | `flatpak` | `flatpak remote-ls --user --updates` + `flatpak remote-ls --system --updates` | `flatpak update --user -y --noninteractive` + `sudo flatpak update --system -y --noninteractive` |
 
@@ -256,6 +256,9 @@ export interface PackageManager {
 10. **Flatpak Dual-Scope Updates**:
    - `FlatpakManager.checkUpdates()` queries both installations (`flatpak remote-ls --user --updates` and `flatpak remote-ls --system --updates`), because a system-only listing hides user-scoped apps. Ref names shared by both installations are deduplicated.
    - `executeUpdate()` runs `flatpak update --user -y --noninteractive` first (never requiring elevation). The system scope is then handled depending on privileges: with root or a cached sudo ticket it runs `sudo flatpak update --system -y --noninteractive`; without privileges it inspects `flatpak list --system --columns=application` and marks the step `failed` with sudo guidance when system apps exist, or `skipped` when no system-scope apps are installed, so user-only setups are not reported as failures.
+11. **APT Kept-Back Avoidance & Consent-Gated Autoremove**:
+   - `AptManager` upgrades with `sudo apt-get upgrade -y --with-new-pkgs`. Plain `apt-get upgrade` refuses any upgrade that pulls in new dependencies, leaving those packages `kept back` while the summary still reported success.
+   - `sudo apt-get autoremove -y` mirrors the DNF contract: simulated under `--dry-run`, queried through `options.confirmAction` in interactive runs (auto-approved with `--yes`, marked `status: 'skipped'` when declined), never executed without a callback, and never executed after a failed upgrade step.
 
 ---
 

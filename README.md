@@ -44,7 +44,7 @@ Heimdall (`hmd`) supports 14 package managers across system, runtime, language, 
 | **[Ruby Gem](https://rubygems.org)** | 💎 | `language` | `gem outdated` (skips deprecated Apple System Ruby `/usr/bin/gem`) | 1. `gem update --user-install`<br>2. `gem cleanup` |
 | **[MacPorts](https://www.macports.org)** | ⚓ | `system` | `port outdated` + non-interactive `sudo -n true` verification | 1. `sudo port selfupdate`<br>2. `sudo port upgrade outdated` |
 | **[Mac App Store (mas)](https://github.com/mas-cli/mas)** | 🍎 | `appstore` | `mas outdated` | `mas upgrade` |
-| **[APT (Debian/Ubuntu)](https://wiki.debian.org/Apt)** | 🐧 | `system` | `apt list --upgradable` + non-interactive `sudo -n true` check | 1. `sudo apt-get update -y`<br>2. `sudo apt-get upgrade -y`<br>3. `sudo apt-get autoremove -y` |
+| **[APT (Debian/Ubuntu)](https://wiki.debian.org/Apt)** | 🐧 | `system` | `apt list --upgradable` + non-interactive `sudo -n true` check | 1. `sudo apt-get update -y`<br>2. `sudo apt-get upgrade -y --with-new-pkgs` (avoids leaving dependency-gaining upgrades `kept back`)<br>3. `sudo apt-get autoremove -y` (prompted interactively with confirmation prompt, auto-approved with `--yes` or `--dry-run`, skipped when declined or after a failed upgrade) |
 | **[DNF (Fedora/RHEL)](https://docs.fedoraproject.org/en-US/quick-docs/dnf/)** | 📦 | `system` | `dnf check-update -y` (exit code 100 signals updates) + `sudo -n true` check | 1. `sudo dnf upgrade -y --refresh`<br>2. `sudo dnf autoremove -y` (prompted interactively with confirmation prompt, auto-approved with `--yes` or `--dry-run`) |
 | **[Flatpak](https://flatpak.org)** | 📦 | `system` | `flatpak remote-ls --user --updates` + `flatpak remote-ls --system --updates` (both scopes, deduplicated) | 1. `flatpak update --user -y --noninteractive`<br>2. `sudo flatpak update --system -y --noninteractive` (marked `failed` with sudo guidance when system apps exist but privileges are unavailable, `skipped` when no system-scope apps are installed) |
 
@@ -159,6 +159,7 @@ Test coverage includes:
 - `HomebrewManager` selective formula vs. cask execution branches.
 - Pre-check behaviors (skipping `/usr/bin/gem`, sudo privilege checks for MacPorts, APT and DNF, interactive sudo acquisition with ticket keep-alive).
 - `FlatpakManager` dual-scope querying (user + system installations) and system-step sudo gating.
+- `AptManager` upgradable parsing (epochs, architecture-qualified names, header/warning lines) and its consent-gated autoremove branch.
 - HTTP registry lookup error handling for Yarn and pipx.
 - Formatting renderers (micro-border table, directional version diffs, execution summary metrics).
 

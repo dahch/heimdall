@@ -558,6 +558,151 @@ Done in 0.02s.
       expect(result.success).toBe(false);
       expect(result.error).toContain('APT requires sudo privileges');
     });
+
+    it('parses upgradable output with epochs and arch-qualified names, ignoring headers', async () => {
+      const { AptManager } = await import('../src/managers/linux.js');
+      const manager = new AptManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: [
+          'Listing...',
+          'curl/jammy-updates,jammy-security 7.81.0-1ubuntu1.15 amd64 [upgradable from: 7.81.0-1ubuntu1.13]',
+          'libc6:amd64/stable 2.36-9+deb12u4 amd64 [upgradable from: 2.36-9+deb12u3]',
+          'openssl/stable 3:3.0.11-1~deb12u2 amd64 [upgradable from: 3:3.0.11-1~deb12u1]',
+          'WARNING: apt does not have a stable CLI interface. Use with caution in scripts.',
+          '',
+        ].join('\n'),
+        stderr: '',
+        exitCode: 0,
+        success: true,
+        timedOut: false,
+      });
+
+      const result = await manager.checkUpdates();
+
+      expect(result.error).toBeUndefined();
+      expect(result.updates).toEqual([
+        {
+          managerId: 'apt',
+          managerName: 'APT (Debian/Ubuntu)',
+          name: 'curl',
+          currentVersion: '7.81.0-1ubuntu1.13',
+          latestVersion: '7.81.0-1ubuntu1.15',
+          type: 'deb',
+        },
+        {
+          managerId: 'apt',
+          managerName: 'APT (Debian/Ubuntu)',
+          name: 'libc6:amd64',
+          currentVersion: '2.36-9+deb12u3',
+          latestVersion: '2.36-9+deb12u4',
+          type: 'deb',
+        },
+        {
+          managerId: 'apt',
+          managerName: 'APT (Debian/Ubuntu)',
+          name: 'openssl',
+          currentVersion: '3:3.0.11-1~deb12u1',
+          latestVersion: '3:3.0.11-1~deb12u2',
+          type: 'deb',
+        },
+      ]);
+    });
+
+    it('upgrades with new packages allowed and runs the confirmed autoremove', async () => {
+      const { AptManager } = await import('../src/managers/linux.js');
+      const manager = new AptManager();
+      const executedCommands: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executedCommands.push(`${cmd} ${(args ?? []).join(' ')}`);
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const confirmAction = vi.fn().mockResolvedValue(true);
+      const result = await manager.executeUpdate(
+        [{ managerId: 'apt', managerName: 'APT', name: 'curl', currentVersion: '7.88', latestVersion: '7.89' }],
+        { dryRun: false, confirmAction }
+      );
+
+      expect(result.success).toBe(true);
+      expect(confirmAction).toHaveBeenCalledWith(
+        'Do you want to run sudo apt-get autoremove to clean up orphaned packages?'
+      );
+      expect(executedCommands.filter((c) => c.startsWith('sudo apt-get'))).toEqual([
+        'sudo apt-get update -y',
+        'sudo apt-get upgrade -y --with-new-pkgs',
+        'sudo apt-get autoremove -y',
+      ]);
+      expect(result.steps.map((s) => s.status)).toEqual(['success', 'success', 'success']);
+    });
+
+    it('skips autoremove when the confirmation is declined', async () => {
+      const { AptManager } = await import('../src/managers/linux.js');
+      const manager = new AptManager();
+      const executedCommands: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executedCommands.push(`${cmd} ${(args ?? []).join(' ')}`);
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const confirmAction = vi.fn().mockResolvedValue(false);
+      const result = await manager.executeUpdate(
+        [{ managerId: 'apt', managerName: 'APT', name: 'curl', currentVersion: '7.88', latestVersion: '7.89' }],
+        { dryRun: false, confirmAction }
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(1);
+      expect(result.steps[2].status).toBe('skipped');
+      expect(executedCommands.filter((c) => c.startsWith('sudo apt-get'))).toEqual([
+        'sudo apt-get update -y',
+        'sudo apt-get upgrade -y --with-new-pkgs',
+      ]);
+    });
+
+    it('skips autoremove by default and never runs it after a failed upgrade', async () => {
+      const { AptManager } = await import('../src/managers/linux.js');
+      const manager = new AptManager();
+      const executedCommands: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executedCommands.push(`${cmd} ${(args ?? []).join(' ')}`);
+        if (cmd === 'sudo' && args?.[1] === 'upgrade') {
+          return { stdout: '', stderr: 'E: Unable to fetch some archives', exitCode: 100, success: false, timedOut: false };
+        }
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const result = await manager.executeUpdate(
+        [{ managerId: 'apt', managerName: 'APT', name: 'curl', currentVersion: '7.88', latestVersion: '7.89' }],
+        { dryRun: false }
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Unable to fetch some archives');
+      expect(result.steps[2].status).toBe('skipped');
+      expect(executedCommands).not.toContain('sudo apt-get autoremove -y');
+    });
+
+    it('simulates update, upgrade and autoremove in dry-run mode', async () => {
+      const { AptManager } = await import('../src/managers/linux.js');
+      const manager = new AptManager();
+      const execSpy = vi.spyOn(execUtils, 'safeExec');
+
+      const result = await manager.executeUpdate(
+        [{ managerId: 'apt', managerName: 'APT', name: 'curl', currentVersion: '7.88', latestVersion: '7.89' }],
+        { dryRun: true }
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(1);
+      expect(result.steps.map((s) => s.name)).toEqual([
+        'sudo apt-get update',
+        'sudo apt-get upgrade',
+        'sudo apt-get autoremove',
+      ]);
+      expect(result.steps.every((s) => s.status === 'success')).toBe(true);
+      expect(execSpy).not.toHaveBeenCalled();
+    });
   });
 
   describe('DnfManager', () => {

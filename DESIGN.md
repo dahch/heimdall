@@ -236,6 +236,7 @@ flowchart LR
 7. **Sanitized Error Extraction**: Raw stderr and stdout often contain non-fatal runtime warnings (`npm warn`, `warning:`, `notice`) or truncated JSON dumps that mask the actual failure. `extractErrorMessage()` filters ambient notices, extracts specific error lines (`npm error`, `fatal:`, `command failed`), and cleanly truncates output for compact display.
 8. **DNF Safe Refresh & Interactive Autoremove**: `DnfManager` runs `sudo dnf upgrade -y --refresh` ensuring repository metadata freshness before upgrade. It decouples `sudo dnf autoremove -y`, prompting the user interactively via `confirmAction` (automatically approved under `--yes` or simulated under `--dry-run`).
 9. **Flatpak Dual-Scope Awareness**: `FlatpakManager` queries updates from both installations (`--user` and `--system`, deduplicated) and mirrors that split at execution time: `flatpak update --user` always runs unprivileged, while `sudo flatpak update --system` executes only with root or a cached ticket. Without privileges the system step is marked `failed` with sudo guidance when system-scope apps exist, or `skipped` when they do not — never silently reporting success for work it did not do.
+10. **APT Kept-Back Avoidance & Gated Cleanup**: `AptManager` runs `sudo apt-get upgrade -y --with-new-pkgs` so dependency-gaining upgrades are not left `kept back` behind a success summary, and gates `sudo apt-get autoremove -y` through the same `confirmAction` contract as DNF (skipped when declined or after a failed upgrade).
 
 ---
 
