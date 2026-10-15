@@ -32,11 +32,11 @@ heimdall/
 │   │   ├── pipx.ts           # pipx adapter (PyPI JSON API lookups, isolated venvs)
 │   │   ├── cargo.ts          # Rust Cargo adapter (rustup toolchains, cargo-install-update)
 │   │   ├── gem.ts            # RubyGems adapter (skips Apple system Ruby /usr/bin/gem)
-│   │   ├── macports.ts       # MacPorts adapter (sudo -n pre-checks, selfupdate)
+│   │   ├── macports.ts       # MacPorts adapter (sudo pre-checks, selfupdate)
 │   │   ├── mas.ts            # Mac App Store CLI adapter
-│   │   └── linux.ts          # Linux APT, DNF, and Flatpak adapters
+│   │   └── linux.ts          # Linux APT, DNF, and Flatpak adapters (dual-scope Flatpak)
 │   └── utils/
-│       ├── exec.ts           # safeExec wrapper around execa, commandExists
+│       ├── exec.ts           # safeExec wrapper around execa, commandExists, ensureSudo + keep-alive
 │       ├── error.ts          # Clean actionable error extractor (extractErrorMessage)
 │       ├── formatting.ts     # Duration formatting, cli-table3 and execution summary renderers
 │       └── version.ts        # Dynamic package metadata resolution from package.json
@@ -45,6 +45,7 @@ heimdall/
 │   ├── exec.test.ts          # Unit tests for safeExec and commandExists
 │   ├── formatting.test.ts    # Unit tests for extractErrorMessage and rendering utilities
 │   ├── managers.test.ts      # Unit tests for manager parsers, HTTP mocking, and fallback logic
+│   ├── sudo.test.ts          # Unit tests for ensureSudo and the sudo keep-alive (mocked execa)
 │   └── version.test.ts       # Unit tests for dynamic package metadata and version resolution
 ├── bun.lock                  # Bun lockfile for deterministic CI/CD and local builds
 ├── package.json              # Scoped package (@dahch/heimdall), bin ("hmd", "heimdall"), scripts
@@ -72,13 +73,14 @@ When modifying or extending the codebase, you **MUST** uphold the following rule
 - All execution logic must route through [`BasePackageManager.executeStep()`](src/managers/base.ts#L31) or inspect `options.dryRun`.
 - When `options.dryRun` is `true`, no destructive shell commands may be executed. `executeStep` logs `[DRY-RUN] Would run: <command>` and returns `status: 'success'` with `durationMs: 0`.
 
-### 3.4 Explicit Sudo Pre-Verification
-- Never invoke `sudo <command>` directly without verifying non-interactive privileges beforehand.
-- Follow the pattern established in [`MacPortsManager`](src/managers/macports.ts#L96-L117), [`AptManager`](src/managers/linux.ts#L90-L111), and [`DnfManager`](src/managers/linux.ts#L383-L404):
+### 3.4 Explicit Sudo Acquisition & Pre-Verification
+- Declare `readonly requiresSudo = true` on any manager whose routine calls `sudo`. The CLI reads this flag to acquire the ticket once, before execution starts.
+- Never invoke `sudo <command>` directly without verifying non-interactive privileges beforehand. Subprocesses are spawned with `stdin: 'ignore'`, so a password prompt inside a step can only fail or hang.
+- Follow the pattern established in [`MacPortsManager`](src/managers/macports.ts#L96-L117), [`AptManager`](src/managers/linux.ts#L91-L113), and [`DnfManager`](src/managers/linux.ts#L452-L474), which calls the shared [`BasePackageManager.hasPasswordlessSudo()`](src/managers/base.ts#L29) helper (uses `safeExec('sudo', ['-n', 'true'], { timeoutMs: 3000 })` so tests can intercept it):
   ```typescript
   if (!options.dryRun && process.getuid?.() !== 0) {
-    const sudoCheck = await safeExec('sudo', ['-n', 'true'], { timeoutMs: 3000 });
-    if (!sudoCheck.success) {
+    if (!(await this.hasPasswordlessSudo())) {
+      const error = `${this.name} requires sudo privileges. ${SUDO_REQUIRED_HINT}`;
       return {
         managerId: this.id,
         managerName: this.name,
@@ -86,12 +88,13 @@ When modifying or extending the codebase, you **MUST** uphold the following rule
         success: false,
         updatedCount: 0,
         durationMs: Date.now() - startTime,
-        steps: [{ name: 'sudo privileges', command: 'sudo -n true', status: 'failed', error: '...' }],
-        error: 'Requires sudo privileges. Run "sudo -v" before hmd.',
+        steps: [{ name: 'sudo privileges', command: 'sudo -n true', status: 'failed', error }],
+        error,
       };
     }
   }
   ```
+- [`ensureSudo()`](src/utils/exec.ts#L43) in [`src/cli.ts`](src/cli.ts#L181-L199) prompts for the password through `sudo -v` with `stdio: 'inherit'` on the controlling terminal (never in dry-run, never as root, never without a TTY), and [`startSudoKeepAlive()`](src/utils/exec.ts#L62) refreshes the ticket every 60s during execution. Never tell users to run `sudo hmd`: the CLI is installed under the user's `PATH` and root's `secure_path` does not include it.
 
 ### 3.5 Native HTTP Over N+1 Subprocesses
 - When checking outdated packages for tools without bulk outdated commands (e.g. Yarn, pipx), **do not spawn child processes in a loop** (`npm view` or `pip index`).
@@ -145,6 +148,7 @@ export class ExampleManager extends BasePackageManager {
   readonly name = 'Example Manager';
   readonly icon = '📦';
   readonly category: ManagerCategory = 'system';
+  readonly requiresSudo = true; // Only when the routine calls sudo (see invariant 3.4)
   protected readonly binary = 'example-cli';
 
   // Override isAvailable() if custom path or environment checks are required
@@ -283,3 +287,13 @@ Releases are published automatically to npm using GitHub Actions upon pushing a 
 6. **Testing & Quality Assurance**: Executes `bun run test && bun run typecheck` to prevent releasing regressions.
 7. **Provenance Publication**: Publishes package `@dahch/heimdall` using `npm publish --provenance` with secret `NPM_TOKEN`.
 
+<!-- CODEGRAPH_START -->
+## CodeGraph
+
+In repositories indexed by CodeGraph (a `.codegraph/` directory exists at the repo root), reach for it BEFORE grep/find or reading files when you need to understand or locate code:
+
+- **MCP tool** (when available): `codegraph_explore` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. If it's listed but deferred, load it by name via tool search.
+- **Shell** (always works): `codegraph explore "<symbol names or question>"` prints the same output.
+
+If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.
+<!-- CODEGRAPH_END -->

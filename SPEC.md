@@ -150,19 +150,21 @@ export interface GlobalSummary {
 }
 ```
 
-### 4.8 Package Manager Contract ([`PackageManager`](src/types.ts#L58-L67))
+### 4.8 Package Manager Contract ([`PackageManager`](src/types.ts#L58-L68))
 ```typescript
 export interface PackageManager {
   readonly id: string;
   readonly name: string;
   readonly icon: string;
   readonly category: ManagerCategory;
+  readonly requiresSudo?: boolean;
 
   isAvailable(): Promise<boolean>;
   checkUpdates(options?: CheckOptions): Promise<CheckResult>;
   executeUpdate(items: UpdateItem[], options: ExecutionOptions): Promise<UpdateExecutionResult>;
 }
 ```
+`requiresSudo` is declared by managers whose routines need elevation (`apt`, `dnf`, `macports`, `flatpak`). The CLI aggregates it across the managers selected for update and acquires the sudo ticket once before execution begins.
 
 ### 4.9 Supported Package Managers Matrix
 
@@ -181,7 +183,7 @@ export interface PackageManager {
 | `mas` | Mac App Store | `appstore` | `mas` | macOS | `mas-app` | `mas outdated` | `mas upgrade` |
 | `apt` | APT | `system` | `apt` / `apt-get` | Linux (Debian, Ubuntu) | `deb` | `apt list --upgradable` | `sudo apt-get update` + `upgrade` + `autoremove` |
 | `dnf` | DNF (Fedora/RHEL) | `system` | `dnf` | Linux (Fedora, RHEL, CentOS) | `rpm` | `dnf check-update -y` (exit code 100) | `sudo dnf upgrade -y --refresh` + conditional `sudo dnf autoremove -y` |
-| `flatpak` | Flatpak | `system` | `flatpak` | Linux | `flatpak` | `flatpak remote-ls --updates` | `flatpak update -y --noninteractive` |
+| `flatpak` | Flatpak | `system` | `flatpak` | Linux | `flatpak` | `flatpak remote-ls --user --updates` + `flatpak remote-ls --system --updates` | `flatpak update --user -y --noninteractive` + `sudo flatpak update --system -y --noninteractive` |
 
 ---
 
@@ -224,8 +226,10 @@ export interface PackageManager {
 ### 5.4 Stage 4: Execution & Resilience Strategies
 1. **Sequential Execution**: Selected managers execute sequentially to avoid lockfile contention (e.g. brew locks, dpkg database locks).
 2. **Dry-Run Emulation**: When `options.dryRun` is `true`, [`BasePackageManager.executeStep()`](src/managers/base.ts#L31) prints `[DRY-RUN] Would run: <command>` and returns `status: 'success'` with `durationMs: 0` without invoking `safeExec`.
-3. **Privilege Pre-Checks**:
-   - `MacPortsManager`, `AptManager`, and `DnfManager` run `sudo -n true` (timeout: 3,000ms) before executing privileged operations. If non-interactive sudo is unavailable, they fail fast with clear instructions (`Run "sudo -v" before hmd` or `Run "sudo -v" before running hmd`) instead of hanging the process.
+3. **Privilege Acquisition & Pre-Checks**:
+   - Stage 3.5 runs before any spinner owns the TTY: if any manager selected for update declares `requiresSudo` and the process is not root and the run is not a dry run, `ensureSudo()` first tests `sudo -n true`. If no ticket is cached and `process.stdin.isTTY` is true, it runs `sudo -v` with `stdio: 'inherit'` so the password is entered on the controlling terminal. Declining or failing leaves execution to proceed, with privileged managers reporting their own sudo failure.
+   - On success, `startSudoKeepAlive()` refreshes the ticket every 60s (`sudo -n -v`) and is stopped in a `finally` block after execution.
+   - `MacPortsManager`, `AptManager`, `DnfManager` and `FlatpakManager` re-verify non-interactive credentials through `BasePackageManager.hasPasswordlessSudo()` (`sudo -n true`, timeout: 3,000ms) before executing privileged operations. If non-interactive sudo is unavailable, they fail fast with clear instructions (`Run "sudo -v" in this terminal and retry`) instead of hanging the process.
 4. **Major Semver Upgrades (Bun & Yarn)**:
    - `BunManager`: Runs `bun add -g <pkg>@latest` prior to `bun update -g` to bypass semver restrictions in `~/.bun/install/global/package.json`.
    - `YarnManager`: Runs `yarn global add <pkg>@latest` prior to `yarn global upgrade`.
@@ -249,6 +253,9 @@ export interface PackageManager {
 9. **DNF Refresh & Interactive Autoremove**:
    - `DnfManager` executes `sudo dnf upgrade -y --refresh` to ensure repository metadata freshness before applying package upgrades.
    - Following upgrade success, `DnfManager` handles `sudo dnf autoremove -y` conditionally: in dry-run mode, it simulates execution; in live runs with interactive confirmation callback (`options.confirmAction`), it prompts the user interactively (automatically approved under `--yes`). If declined, the autoremove step is marked with `status: 'skipped'`.
+10. **Flatpak Dual-Scope Updates**:
+   - `FlatpakManager.checkUpdates()` queries both installations (`flatpak remote-ls --user --updates` and `flatpak remote-ls --system --updates`), because a system-only listing hides user-scoped apps. Ref names shared by both installations are deduplicated.
+   - `executeUpdate()` runs `flatpak update --user -y --noninteractive` first (never requiring elevation). The system scope is then handled depending on privileges: with root or a cached sudo ticket it runs `sudo flatpak update --system -y --noninteractive`; without privileges it inspects `flatpak list --system --columns=application` and marks the step `failed` with sudo guidance when system apps exist, or `skipped` when no system-scope apps are installed, so user-only setups are not reported as failures.
 
 ---
 

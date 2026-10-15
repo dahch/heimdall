@@ -18,6 +18,8 @@ This document captures key architectural and design decisions made in Heimdall (
 | [ADR 008](#adr-008-project-rebranding-to-heimdall-cli-hmd-and-dynamic-runtime-version-resolution-from-packagejson) | Project Rebranding to Heimdall (CLI: `hmd`) and Dynamic Runtime Version Resolution from `package.json` | **Accepted** | 2026-09-26 |
 | [ADR 009](#adr-009-scoped-npm-publication-dahchheimdall-with-provenance-and-bun-powered-github-actions-ci) | Scoped npm Publication (`@dahch/heimdall`) with Provenance and Bun-Powered GitHub Actions CI | **Accepted** | 2026-09-26 |
 | [ADR 010](#adr-010-integration-of-dnf-package-manager-for-fedorarhel-distributions) | Integration of DNF Package Manager for Fedora/RHEL Distributions | **Accepted** | 2026-10-09 |
+| [ADR 011](#adr-011-interactive-sudo-acquisition-in-the-cli-with-ticket-keep-alive) | Interactive Sudo Acquisition in the CLI with Ticket Keep-Alive | **Accepted** | 2026-10-15 |
+| [ADR 012](#adr-012-dual-scope-flatpak-updates-user--system-installations) | Dual-Scope Flatpak Updates (User + System Installations) | **Accepted** | 2026-10-15 |
 
 ---
 
@@ -306,3 +308,61 @@ All package queries are dispatched in parallel via `Promise.all` with a strict 3
     - Flexible and safe dependency cleanup giving users final authority over `autoremove`.
   - **Trade-offs / Mitigations**:
     - `confirmAction` introduces interactive decision points into the execution phase for managers that declare optional steps. When `--yes` is specified, `confirmAction` short-circuits to `true` to preserve complete unattended non-interactivity.
+- **Amendments**:
+  - **2026-10-15**: Decision 3 (non-interactive sudo verification) is amended by [ADR-011](#adr-011-interactive-sudo-acquisition-in-the-cli-with-ticket-keep-alive). The `sudo -n true` pre-check remains, now centralized in `BasePackageManager.hasPasswordlessSudo()`, but the CLI acquires the sudo ticket interactively before execution instead of asking the user to run `sudo -v` in advance, and the failure message now reads `DNF requires sudo privileges. Run "sudo -v" in this terminal and retry ("sudo hmd" will not work: hmd is not in root's PATH).`
+
+---
+
+## ADR-011: Interactive Sudo Acquisition in the CLI with Ticket Keep-Alive
+
+- **Status**: Accepted
+- **Date**: 2026-10-15
+- **Context**:
+  Privileged managers historically refused to run when no cached sudo ticket existed, instructing users to `Run "sudo -v" before running hmd`. In practice this workflow was broken from both directions:
+  1. **`sudo hmd` is not a valid workaround**: `hmd` is installed as a user-PATH binary (npm/Bun/pnpm global prefix). Root's `secure_path` normally omits those directories, so `sudo hmd` fails with `command not found`.
+  2. **Manual `sudo -v` is fragile**: sudo validates cached credentials per controlling terminal by default (`tty_tickets`). Telling the user to authenticate in a different shell, or expecting a ticket to survive an arbitrarily long scan phase, produces unpredictable failures.
+  3. **Subprocesses cannot self-authenticate**: every step spawns through `safeExec` with `stdin: 'ignore'` to guarantee non-interactivity, so a password prompt surfacing inside a step can only fail or hang.
+  The result was that DNF, APT, MacPorts, and system-scoped Flatpak actions were effectively unusable for a first-time user.
+- **Decision**:
+  1. **Declare elevation statically**: extend the [`PackageManager`](src/types.ts) contract with optional `readonly requiresSudo?: boolean`, set to `true` by `AptManager`, `DnfManager`, `MacPortsManager`, and `FlatpakManager`.
+  2. **Acquire the ticket once, before any spinner owns the TTY**: a new privilege stage in [`src/cli.ts`](src/cli.ts) runs after the confirmation gate and before execution. It is skipped for `--dry-run` and for root. When triggered, [`ensureSudo()`](src/utils/exec.ts) tests `sudo -n true` first and falls back to `sudo -v` with `stdio: 'inherit'` (only when `process.stdin.isTTY`) so the password is typed on the controlling terminal, which is exactly the terminal sudo records in its timestamp.
+  3. **Keep the ticket alive during long upgrades**: [`startSudoKeepAlive()`](src/utils/exec.ts) refreshes credentials every 60s with `sudo -n -v` (unref'd timer) and is stopped in a `finally` block, so multi-minute DNF transactions cannot be interrupted by ticket expiry.
+  4. **Treat privilege denial as non-fatal**: declining or failing authentication does not abort the run. Execution proceeds so unprivileged managers and user-scope work still complete, while privileged managers fail fast with actionable guidance.
+  5. **Centralize non-interactive pre-verification**: [`BasePackageManager.hasPasswordlessSudo()`](src/managers/base.ts) wraps `sudo -n true` (timeout 3000ms) so every privileged manager keeps the invariant "verify before invoking sudo" without duplicating the check or blocking test interception.
+  6. **Correct the user guidance**: failure messages use the shared `SUDO_REQUIRED_HINT` constant, which recommends `sudo -v` and explicitly states that `sudo hmd` will not work.
+- **Consequences**:
+  - **Positive**:
+    - Privileged updates work out of the box: one password prompt per run instead of an undocumented manual preparation step.
+    - No hanging or half-dead subprocesses, since authentication always happens on a terminal and steps remain strictly non-interactive.
+    - `--dry-run` never triggers authentication, preserving its "no side effects, no prompts" contract.
+    - Unprivileged managers in the same run are unaffected by an authentication refusal.
+  - **Trade-offs / Mitigations**:
+    - Environments without a TTY (CI, cron, piped stdin) cannot authenticate, so privileged steps continue to fail fast with guidance; this is intentional, as hmd must never block waiting for input it cannot receive.
+    - The static `requiresSudo` flag can request a ticket for a manager that would not have needed it in that particular run (e.g. a Flatpak setup with user-scope apps only). The cost is a single password prompt, judged preferable to per-item scope bookkeeping across the CLI boundary.
+    - Unit tests for `ensureSudo` must mock the `execa` module (see [`tests/sudo.test.ts`](tests/sudo.test.ts)), whereas manager-level checks stay mockable through `safeExec` because `hasPasswordlessSudo()` lives in `BasePackageManager`.
+
+---
+
+## ADR-012: Dual-Scope Flatpak Updates (User + System Installations)
+
+- **Status**: Accepted
+- **Date**: 2026-10-15
+- **Context**:
+  The initial Flatpak integration treated the runtime as a single installation: `checkUpdates()` parsed `flatpak remote-ls --updates`, and `executeUpdate()` ran one blind `flatpak update -y --noninteractive` step. Two consequences surfaced in real Fedora usage:
+  1. **Scope blindness on detection**: listing commands operate on one installation unless a scope is given, so user-scoped applications could be omitted from the outdated report entirely.
+  2. **Unauthorized system updates**: system-wide refs require root (or a polkit agent answering an authorization prompt). With output piped, stdin ignored, and sudo never used, the system portion of the update could fail or be skipped without a clear diagnosis, and the manager reported success based on a step that never mutated anything.
+- **Decision**:
+  1. **Query both installations explicitly**: `checkUpdates()` runs `flatpak remote-ls --user --updates` and `flatpak remote-ls --system --updates` in parallel, deduplicating ref names shared by both installations, and reports an error only when both queries fail.
+  2. **Mirror the scope split at execution time**: step 1 is `flatpak update --user -y --noninteractive` (never requiring elevation); step 2 is `sudo flatpak update --system -y --noninteractive`.
+  3. **Gate the system step on privileges instead of guessing**: it runs when the process is root or a cached ticket exists (verified with `sudo -n true`). Otherwise the manager inspects `flatpak list --system --columns=application` (readable unprivileged) to distinguish two honest outcomes: `failed` with sudo guidance when system-scope apps exist, and `skipped` when none do.
+  4. **Keep skipped steps out of the success calculation**: success is computed over non-skipped steps, consistent with the fallback-trigger convention established for npm.
+  5. **Declare `requiresSudo = true`** so the CLI acquires the ticket up front (see [ADR-011](#adr-011-interactive-sudo-acquisition-in-the-cli-with-ticket-keep-alive)).
+- **Consequences**:
+  - **Positive**:
+    - Outdated user-scoped applications are detected and updated on every system, regardless of which installation holds them.
+    - System-wide updates are applied through sudo instead of relying on an interactive polkit agent that cannot exist in a piped subprocess.
+    - The summary distinguishes "skipped because not applicable" from "failed because privileges are missing", so user-only setups never show false failures and system-only setups never show false successes.
+  - **Trade-offs / Mitigations**:
+    - An extra `flatpak list` subprocess runs only on the privilege-denied path, keeping the happy path at two commands.
+    - Both scopes run unconditionally even when all pending refs belong to one of them; `flatpak` reports "Nothing to do" as a zero exit, so the cost is a few hundred milliseconds of no-op work rather than a failure.
+

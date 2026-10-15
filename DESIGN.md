@@ -48,10 +48,13 @@ flowchart TD
         PromptClack -- "Select Specific" --> MultiSelect["Prompt Multiselect Managers"]
     end
 
-    subgraph Phase2 ["Phase 2: Controlled Sequential Execution"]
-        SetDryRun & SetYes & PromptClack & MultiSelect --> EngineExec["UpdaterEngine.execute()\n(Sequential Manager Iteration)"]
+    subgraph Phase2 ["Phase 2: Privilege Acquisition & Controlled Sequential Execution"]
+        SetDryRun & SetYes & PromptClack & MultiSelect --> SudoAcquire{"Selected manager declares\nrequiresSudo?"}
+        SudoAcquire -- "No / dry-run / root" --> EngineExec["UpdaterEngine.execute()\n(Sequential Manager Iteration)"]
+        SudoAcquire -- "Yes" --> EnsureTicket["ensureSudo()\n(sudo -n true, else sudo -v on TTY)\n+ startSudoKeepAlive()"]
+        EnsureTicket --> EngineExec
         EngineExec --> ManagerLoop["For each selected manager"]
-        ManagerLoop --> SudoPreCheck{"Privilege Check\n(MacPorts / APT / DNF)"}
+        ManagerLoop --> SudoPreCheck{"Privilege Check\n(MacPorts / APT / DNF / Flatpak system)"}
         SudoPreCheck -- "sudo -n true fails" --> FastFail["Fail Step Fast with Guidance"]
         SudoPreCheck -- "Privileges OK or User" --> ExecRoutine["Execute Manager Update Routine"]
         ExecRoutine --> StepExec["BasePackageManager.executeStep()"]
@@ -224,7 +227,7 @@ flowchart LR
 ```
 
 ### Specific Resilience Strategies:
-1. **MacPorts, APT & DNF Non-Interactive Sudo**: Before attempting `sudo port`, `sudo apt-get`, or `sudo dnf`, managers test credentials via `sudo -n true`. If cached privileges have expired, they fail immediately with actionable user advice, avoiding a 3-minute freeze.
+1. **Interactive Sudo Acquisition & Non-Interactive Pre-Verification**: When any manager selected for update declares `requiresSudo` (MacPorts, APT, DNF, Flatpak), the CLI acquires the ticket once before execution: `sudo -n true` first, then `sudo -v` with `stdio: 'inherit'` on the controlling terminal when no ticket is cached and stdin is a TTY. A 60s keep-alive (`sudo -n -v`) refreshes the ticket so long upgrades cannot be interrupted by a hidden password prompt. Afterwards, managers re-test `sudo -n true` before privileged steps and fail immediately with actionable advice if credentials vanished, avoiding a 3-minute freeze.
 2. **Bun & Yarn Global Semver Override**: Standard `bun update -g` and `yarn global upgrade` obey version ranges stored in their global manifest files, ignoring newer major releases. Both managers prepend explicit `add -g <pkg>@latest` steps to force upgrades across major semver boundaries.
 3. **Bun Coexistence with Homebrew**: Calling `bun upgrade` when Bun was installed via Homebrew produces errors or broken symlinks. `BunManager` inspects `which bun` and skips self-upgrade if managed by Homebrew.
 4. **npm Targeted Batching, Multi-Tier Fallback & Script Recovery**: `NpmManager` targets outdated packages directly via `npm install -g --legacy-peer-deps -- <pkg>@<latest>...`. Package targets use POSIX `--` separation to avoid colliding with CLI flags. If only 1 package is outdated, it proceeds straight to isolated install; if a batch install fails (e.g. peer conflicts), the batch step is marked `status = 'skipped'` (fallback trigger) and it falls back to isolated per-package installation. If an individual package fails due to install lifecycle scripts (`only-allow pnpm`, `node-gyp`), it automatically retries with `--ignore-scripts -- <target>`.
@@ -232,6 +235,7 @@ flowchart LR
 6. **Homebrew Non-Redundant Targeted Upgrades**: `HomebrewManager` inspects pending item classifications. If only casks are pending, it runs `brew upgrade --cask` (bypassing formula graph resolution). If only formulae are pending, it runs `brew upgrade --formula`. If both are pending, it runs `brew upgrade`.
 7. **Sanitized Error Extraction**: Raw stderr and stdout often contain non-fatal runtime warnings (`npm warn`, `warning:`, `notice`) or truncated JSON dumps that mask the actual failure. `extractErrorMessage()` filters ambient notices, extracts specific error lines (`npm error`, `fatal:`, `command failed`), and cleanly truncates output for compact display.
 8. **DNF Safe Refresh & Interactive Autoremove**: `DnfManager` runs `sudo dnf upgrade -y --refresh` ensuring repository metadata freshness before upgrade. It decouples `sudo dnf autoremove -y`, prompting the user interactively via `confirmAction` (automatically approved under `--yes` or simulated under `--dry-run`).
+9. **Flatpak Dual-Scope Awareness**: `FlatpakManager` queries updates from both installations (`--user` and `--system`, deduplicated) and mirrors that split at execution time: `flatpak update --user` always runs unprivileged, while `sudo flatpak update --system` executes only with root or a cached ticket. Without privileges the system step is marked `failed` with sudo guidance when system-scope apps exist, or `skipped` when they do not — never silently reporting success for work it did not do.
 
 ---
 

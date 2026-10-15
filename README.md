@@ -20,7 +20,7 @@
   2. **Aggregated Review & Confirmation**: Shows an interactive tabular overview comparing current and latest package versions across all managers, prompting for confirmation before modifying the system.
 - 🧪 **True Simulated Dry-Run (`--dry-run`)**: Traverses the full engine lifecycle, formats outdated packages, and executes mock update routines step-by-step with real-time feedback without touching system files.
 - ⚡ **High-Speed Registry Queries**: Yarn and pipx bypass heavy CLI subprocess spawning by querying the npm Registry and PyPI JSON APIs directly over HTTP with strict 3-second abort timeouts.
-- 🔐 **Non-Interactive Sudo Pre-Checks**: Privileged managers (MacPorts, Linux APT, Linux DNF) verify cached credentials using `sudo -n true` beforehand, preventing terminal lockups and password prompt hangs.
+- 🔐 **Interactive Sudo Acquisition**: When a selected manager requires elevation (`requiresSudo`), `hmd` verifies the cached ticket with `sudo -n true` and, if missing, prompts for the password exactly once through `sudo -v` on the controlling terminal before any spinner takes over the TTY. A background keep-alive refreshes the ticket during long upgrades, and every privileged step re-verifies non-interactive credentials so subprocesses can never hang on a hidden password prompt. Running `sudo hmd` is neither required nor supported (the CLI lives under the user's `PATH`, which root's `secure_path` does not include).
 - 🎨 **Modern Minimalist UX**: Terminal interface powered by `@clack/prompts`, micro-border tabular layouts with directional version transitions (`current → latest`), persistent real-time step progression with elapsed durations, and actionable error extraction.
 - 🏷 **Dynamic Version Resolution**: Reads package name and version dynamically from `package.json` at runtime via `import.meta.url`, ensuring banners and `--version` flags remain in sync with repository releases.
 - ⚙ **Flexible Targeting**: Run interactively, execute non-interactively with `--yes`, or filter target managers using `--only` and `--exclude`.
@@ -46,7 +46,7 @@ Heimdall (`hmd`) supports 14 package managers across system, runtime, language, 
 | **[Mac App Store (mas)](https://github.com/mas-cli/mas)** | 🍎 | `appstore` | `mas outdated` | `mas upgrade` |
 | **[APT (Debian/Ubuntu)](https://wiki.debian.org/Apt)** | 🐧 | `system` | `apt list --upgradable` + non-interactive `sudo -n true` check | 1. `sudo apt-get update -y`<br>2. `sudo apt-get upgrade -y`<br>3. `sudo apt-get autoremove -y` |
 | **[DNF (Fedora/RHEL)](https://docs.fedoraproject.org/en-US/quick-docs/dnf/)** | 📦 | `system` | `dnf check-update -y` (exit code 100 signals updates) + `sudo -n true` check | 1. `sudo dnf upgrade -y --refresh`<br>2. `sudo dnf autoremove -y` (prompted interactively with confirmation prompt, auto-approved with `--yes` or `--dry-run`) |
-| **[Flatpak](https://flatpak.org)** | 📦 | `system` | `flatpak remote-ls --updates` | `flatpak update -y --noninteractive` |
+| **[Flatpak](https://flatpak.org)** | 📦 | `system` | `flatpak remote-ls --user --updates` + `flatpak remote-ls --system --updates` (both scopes, deduplicated) | 1. `flatpak update --user -y --noninteractive`<br>2. `sudo flatpak update --system -y --noninteractive` (marked `failed` with sudo guidance when system apps exist but privileges are unavailable, `skipped` when no system-scope apps are installed) |
 
 ---
 
@@ -157,7 +157,8 @@ Test coverage includes:
 - Concurrency pool bounds and error isolation in [`UpdaterEngine`](src/core/engine.ts).
 - `NpmManager` targeted batch installation, fallback trigger handling, and `--ignore-scripts` resilience.
 - `HomebrewManager` selective formula vs. cask execution branches.
-- Pre-check behaviors (skipping `/usr/bin/gem`, sudo privilege checks for MacPorts and APT).
+- Pre-check behaviors (skipping `/usr/bin/gem`, sudo privilege checks for MacPorts, APT and DNF, interactive sudo acquisition with ticket keep-alive).
+- `FlatpakManager` dual-scope querying (user + system installations) and system-step sudo gating.
 - HTTP registry lookup error handling for Yarn and pipx.
 - Formatting renderers (micro-border table, directional version diffs, execution summary metrics).
 
