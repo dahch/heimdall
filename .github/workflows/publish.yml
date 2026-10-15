@@ -6,7 +6,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -43,3 +43,8 @@ jobs:
         run: npm publish --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub release
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-from-tag --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
