@@ -183,6 +183,44 @@ describe('Package Managers Outdated Parsers', () => {
       expect(result.steps).toHaveLength(0);
     });
 
+    it('ignores npm diagnostic keys and surfaces the npm error summary', async () => {
+      const manager = new NpmManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: JSON.stringify({
+          error: { code: 'E404', summary: 'Cannot read global package tree' },
+          problems: ['invalid config'],
+        }),
+        stderr: '',
+        exitCode: 1,
+        success: false,
+        timedOut: false,
+      });
+
+      const result = await manager.checkUpdates();
+      expect(result.updates).toHaveLength(0);
+      expect(result.error).toBe('Cannot read global package tree');
+    });
+
+    it('keeps real packages while skipping a co-present npm error key', async () => {
+      const manager = new NpmManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: JSON.stringify({
+          eslint: { current: '8.0.0', wanted: '8.50.0', latest: '9.0.0' },
+          error: { code: 'E404', summary: 'Some unrelated registry issue' },
+        }),
+        stderr: '',
+        exitCode: 1,
+        success: false,
+        timedOut: false,
+      });
+
+      const result = await manager.checkUpdates();
+      expect(result.updates.map((u) => u.name)).toEqual(['eslint']);
+      expect(result.error).toBeUndefined();
+    });
+
     it('successfully executes targeted batch install with specific versions', async () => {
       const manager = new NpmManager();
       const executedCommands: string[] = [];

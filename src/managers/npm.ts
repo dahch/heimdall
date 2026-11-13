@@ -47,16 +47,28 @@ export class NpmManager extends BasePackageManager {
 
       const updates: UpdateItem[] = [];
       const stdout = execRes.stdout.trim();
+      let npmError: string | undefined;
 
       if (stdout.startsWith('{')) {
-        const parsed = JSON.parse(stdout) as Record<string, NpmOutdatedEntry>;
+        const parsed = JSON.parse(stdout) as Record<string, NpmOutdatedEntry | { summary?: string }>;
         for (const [name, info] of Object.entries(parsed)) {
+          // npm mixes diagnostic keys into the outdated payload ("error", "problems");
+          // treating them as packages would fabricate bogus install targets.
+          if (name === 'error' || name === 'problems') {
+            if (name === 'error' && info && typeof info === 'object' && 'summary' in info) {
+              npmError = typeof info.summary === 'string' ? info.summary : undefined;
+            }
+            continue;
+          }
+          if (!info || typeof info !== 'object') continue;
+          const entry = info as NpmOutdatedEntry;
+          if (!entry.current && !entry.latest && !entry.wanted) continue;
           updates.push({
             managerId: this.id,
             managerName: this.name,
             name,
-            currentVersion: info.current ?? 'unknown',
-            latestVersion: info.latest ?? info.wanted ?? 'latest',
+            currentVersion: entry.current ?? 'unknown',
+            latestVersion: entry.latest ?? entry.wanted ?? 'latest',
             type: 'global-pkg',
           });
         }
@@ -70,6 +82,7 @@ export class NpmManager extends BasePackageManager {
         available: true,
         updates,
         durationMs: Date.now() - startTime,
+        error: updates.length === 0 ? npmError : undefined,
       };
     } catch (err) {
       return {
