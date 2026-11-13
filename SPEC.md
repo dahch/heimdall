@@ -42,6 +42,8 @@ hmd [options]
 | `-x` | `--exclude <managers>` | `string` | `undefined` | Comma-separated manager IDs or names to exclude from discovery and execution (e.g. `macports,apt`). Case-insensitive. |
 | `-t` | `--timeout <ms>` | `string` | `"25000"` | Per-manager timeout in milliseconds for the outdated scan phase. Parsed as base-10 integer. |
 | `-v` | `--verbose` | `boolean` | `false` | Enables verbose diagnostics, including listing skipped/inactive managers and unhandled step warnings. |
+| — | `--no-distro-upgrade` | `boolean` | `true` | Skips the distribution release upgrade check performed at the very end of the run. |
+| `-U` | `--upgrade-distro` | `boolean` | `false` | Applies a detected, supported distribution release upgrade without asking. It never reboots the machine. |
 | `-h` | `--help` | `boolean` | `false` | Displays standard Commander help table and exits. |
 | `-V` | `--version` | `boolean` | `false` | Outputs CLI version dynamically resolved from `package.json` and exits. |
 
@@ -50,7 +52,7 @@ hmd [options]
 | Exit Code | Condition |
 | :---: | :--- |
 | `0` | **Success**: Updates completed without errors, or all packages are already up to date, or the user deliberately cancelled during interactive prompt selection. |
-| `1` | **Failure / Warning**: <br>- Filter specification (`--only` / `--exclude`) matched 0 package managers.<br>- One or more package managers failed during update execution (`summary.failedCount > 0`).<br>- Fatal unhandled exception occurred in the host process. |
+| `1` | **Failure / Warning**: <br>- Filter specification (`--only` / `--exclude`) matched 0 package managers.<br>- One or more package managers failed during update execution (`summary.failedCount > 0`).<br>- A distribution release upgrade was attempted and failed, or its sudo privileges were not granted.<br>- Fatal unhandled exception occurred in the host process. |
 
 ---
 
@@ -164,7 +166,7 @@ export interface PackageManager {
   executeUpdate(items: UpdateItem[], options: ExecutionOptions): Promise<UpdateExecutionResult>;
 }
 ```
-`requiresSudo` is declared by managers whose routines need elevation (`apt`, `dnf`, `macports`, `flatpak`). The CLI aggregates it across the managers selected for update and acquires the sudo ticket once before execution begins.
+`requiresSudo` is declared by managers whose routines need elevation (`apt`, `dnf`, `macports`, `flatpak`, `firmware`). The CLI aggregates it across the managers selected for update and acquires the sudo ticket once before execution begins.
 
 ### 4.9 Supported Package Managers Matrix
 
@@ -177,6 +179,9 @@ export interface PackageManager {
 | `yarn` | Yarn (global) | `runtime` | `yarn` | Cross-platform | `global-pkg` | `yarn global list` + npm registry HTTP | `yarn global add <pkgs>@latest` + `yarn global upgrade` |
 | `python` | Python (pip user) | `language` | `pip3` / `pip` | Cross-platform | `pip-pkg` | `pip3 list --user --outdated --format=json` | `pip3 install --user --upgrade` |
 | `pipx` | pipx | `language` | `pipx` | Cross-platform | `pipx-app` | `pipx list --json` + PyPI HTTP API | `pipx upgrade-all` |
+| `uv` | uv (Python tools) | `language` | `uv` | Cross-platform | `uv-tool` | `uv tool list` + PyPI HTTP API | `uv tool upgrade --all` + `uv tool install <pkg>@latest` for cross-major tools |
+| `poetry` | Poetry (self-managed) | `language` | `poetry` | Cross-platform | `poetry-self` | `poetry --version` + PyPI HTTP API | `poetry self update` |
+| `conda` | Conda (Anaconda/Miniforge) | `language` | `conda` | Cross-platform | `conda-pkg` | `conda update --all --dry-run --json` (LINK/UNLINK pairing, 60s solver budget) | `conda update --all -y` |
 | `cargo` | Rust (Cargo & Rustup) | `language` | `cargo` / `rustup` | Cross-platform | `crate`, `toolchain` | `rustup check` + `cargo install-update -l` | `rustup update` + `cargo install-update -a` |
 | `gem` | Ruby Gem | `language` | `gem` | Cross-platform | `gem` | `gem outdated` | `gem update --user-install` + `gem cleanup` |
 | `macports` | MacPorts | `system` | `port` | macOS | `port` | `port outdated` | `sudo port selfupdate` + `sudo port upgrade outdated` |
@@ -184,6 +189,7 @@ export interface PackageManager {
 | `apt` | APT | `system` | `apt` / `apt-get` | Linux (Debian, Ubuntu) | `deb` | `apt list --upgradable` | `sudo apt-get update` + `sudo apt-get upgrade -y --with-new-pkgs` + conditional `sudo apt-get autoremove -y` |
 | `dnf` | DNF (Fedora/RHEL) | `system` | `dnf` | Linux (Fedora, RHEL, CentOS) | `rpm` | `dnf check-update -y` (exit code 100) | `sudo dnf upgrade -y --refresh` + conditional `sudo dnf autoremove -y` |
 | `flatpak` | Flatpak | `system` | `flatpak` | Linux | `flatpak` | `flatpak remote-ls --user --updates` + `flatpak remote-ls --system --updates` | `flatpak update --user -y --noninteractive` + `sudo flatpak update --system -y --noninteractive` |
+| `firmware` | Firmware (fwupd) | `system` | `fwupdmgr` | Linux | `firmware` | `fwupdmgr refresh` (best-effort) + `fwupdmgr --json get-updates` | `sudo fwupdmgr refresh --force` + `sudo fwupdmgr update -y --no-reboot-check --no-unreported-check --no-metadata-check` |
 
 ---
 
@@ -196,6 +202,7 @@ export interface PackageManager {
    - `RubyGemManager`: Verifies `which gem`. If it resolves to `/usr/bin/gem` or starts with `/System/Library`, it returns `false` to avoid macOS SIP-protected legacy Ruby hangs.
    - `CargoManager`: Checks whether either `cargo` or `rustup` exists in `PATH`.
    - `PythonPipManager`: Dynamically switches between `pip3` and `pip`, whichever is resolved first.
+   - `FirmwareManager`: Requires `process.platform === 'linux'` and a resolvable `fwupdmgr`; firmware stacks on other platforms are out of scope.
 
 ### 5.2 Stage 2: Outdated Scan & Concurrency Pool
 1. **Concurrency Pool**: To avoid overwhelming network adapters and spawning unconstrained sub-processes, check queries run via a bounded worker pool with maximum **4 concurrent tasks**:
@@ -206,11 +213,15 @@ export interface PackageManager {
 3. **Native HTTP Registry Lookups**:
    - `YarnManager`: Parses `yarn global list --depth=0`, then executes concurrent `fetch()` calls to `https://registry.npmjs.org/<pkg>/latest` with a 3,000ms abort signal.
    - `PipxManager`: Parses `pipx list --json`, then queries `https://pypi.org/pypi/<pkg>/json` with a 3,000ms abort signal. Only packages where PyPI version != installed version are flagged as outdated.
+   - `UvManager`: Parses `uv tool list` (`<tool> v<version>` lines, ignoring the `- <executable>` entries), then queries `https://pypi.org/pypi/<pkg>/json` with a 3,000ms abort signal.
+   - `PoetryManager`: Reads the installed core version from `poetry --version` (`Poetry (version X.Y.Z)`) and compares it with the PyPI `poetry` release. Project dependencies are intentionally untouched.
 4. **Resilient Outdated Parsers**:
    - `NpmManager`: Treats exit code 1 as a valid check state (npm exits 1 when outdated packages are detected).
    - `PnpmManager`: Extracts the substring between the first `{` and last `}` to safely isolate JSON payloads from ambient CLI notices or ASCII tables.
    - `BunManager`: Parses markdown ASCII table lines formatted as `| Package | Current | Update | Latest |`.
    - `DnfManager`: Treats exit code 100 as indicating available updates and exit code 0 as up to date; parses columnar output (`<package>.<arch> <version> <repo>`) including multiline wrapped entries while ignoring repository loading notices.
+   - `CondaManager`: Because conda has no `list --outdated`, it runs the solver in dry-run mode (`conda update --all --dry-run --json`) and pairs `actions.LINK` (new) with `actions.UNLINK` (current) by package name. Links without a matching unlink are solver side effects and are ignored.
+   - `FirmwareManager`: Runs a best-effort `fwupdmgr refresh` (failures are non-fatal: stale metadata is still usable), then parses `fwupdmgr --json get-updates`. Older fwupd versions exit non-zero to mean "no updates", so any parsable JSON payload takes precedence over the exit code.
 
 ### 5.3 Stage 3: Aggregation & Confirmation
 1. **Zero-Update Short-Circuit**: If `allUpdates.length === 0`, the CLI displays an up-to-date banner and exits immediately with code `0`.
@@ -225,11 +236,11 @@ export interface PackageManager {
 
 ### 5.4 Stage 4: Execution & Resilience Strategies
 1. **Sequential Execution**: Selected managers execute sequentially to avoid lockfile contention (e.g. brew locks, dpkg database locks).
-2. **Dry-Run Emulation**: When `options.dryRun` is `true`, [`BasePackageManager.executeStep()`](src/managers/base.ts#L31) prints `[DRY-RUN] Would run: <command>` and returns `status: 'success'` with `durationMs: 0` without invoking `safeExec`.
+2. **Dry-Run Emulation**: When `options.dryRun` is `true`, [`BasePackageManager.executeStep()`](src/managers/base.ts#L41) prints `[DRY-RUN] Would run: <command>` and returns `status: 'success'` with `durationMs: 0` without invoking `safeExec`.
 3. **Privilege Acquisition & Pre-Checks**:
    - Stage 3.5 runs before any spinner owns the TTY: if any manager selected for update declares `requiresSudo` and the process is not root and the run is not a dry run, `ensureSudo()` first tests `sudo -n true`. If no ticket is cached and `process.stdin.isTTY` is true, it runs `sudo -v` with `stdio: 'inherit'` so the password is entered on the controlling terminal. Declining or failing leaves execution to proceed, with privileged managers reporting their own sudo failure.
    - On success, `startSudoKeepAlive()` refreshes the ticket every 60s (`sudo -n -v`) and is stopped in a `finally` block after execution.
-   - `MacPortsManager`, `AptManager`, `DnfManager` and `FlatpakManager` re-verify non-interactive credentials through `BasePackageManager.hasPasswordlessSudo()` (`sudo -n true`, timeout: 3,000ms) before executing privileged operations. If non-interactive sudo is unavailable, they fail fast with clear instructions (`Run "sudo -v" in this terminal and retry`) instead of hanging the process.
+   - `MacPortsManager`, `AptManager`, `DnfManager`, `FlatpakManager` and `FirmwareManager` re-verify non-interactive credentials through `BasePackageManager.hasPasswordlessSudo()` (`sudo -n true`, timeout: 3,000ms) before executing privileged operations. If non-interactive sudo is unavailable, they fail fast with clear instructions (`Run "sudo -v" in this terminal and retry`) instead of hanging the process.
 4. **Major Semver Upgrades (Bun & Yarn)**:
    - `BunManager`: Runs `bun add -g <pkg>@latest` prior to `bun update -g` to bypass semver restrictions in `~/.bun/install/global/package.json`.
    - `YarnManager`: Runs `yarn global add <pkg>@latest` prior to `yarn global upgrade`.
@@ -259,6 +270,32 @@ export interface PackageManager {
 11. **APT Kept-Back Avoidance & Consent-Gated Autoremove**:
    - `AptManager` upgrades with `sudo apt-get upgrade -y --with-new-pkgs`. Plain `apt-get upgrade` refuses any upgrade that pulls in new dependencies, leaving those packages `kept back` while the summary still reported success.
    - `sudo apt-get autoremove -y` mirrors the DNF contract: simulated under `--dry-run`, queried through `options.confirmAction` in interactive runs (auto-approved with `--yes`, marked `status: 'skipped'` when declined), never executed without a callback, and never executed after a failed upgrade step.
+12. **Firmware Updates (fwupd)**:
+   - `FirmwareManager.checkUpdates()` refreshes remote metadata first (best-effort, unprivileged, never fatal) and then parses `fwupdmgr --json get-updates`. Each device contributes one `firmware` item named after the hardware component, with the installed `Version` and the first pending release version.
+   - `executeUpdate()` runs `sudo fwupdmgr refresh --force` followed by `sudo fwupdmgr update -y --no-reboot-check --no-unreported-check --no-metadata-check`. `--no-reboot-check` keeps fwupdmgr from rebooting the machine on its own; the user reboots deliberately after reviewing the summary. UEFI/EC updates that need a power cycle are reported as applied and take effect on the next boot.
+13. **Python Ecosystem Coverage (pip, pipx, uv, Poetry, Conda)**:
+   - `UvManager` upgrades all tools with `uv tool upgrade --all`, then re-installs (`uv tool install <pkg>@latest`) only the tools whose pending target crosses a major version, because uv respects install-time constraints on `upgrade`.
+   - `PoetryManager` updates Poetry itself with `poetry self update`; it never mutates project virtualenvs or lockfiles.
+   - `CondaManager` applies `conda update --all -y` (non-interactive) and grants the solver a 60-second budget even when the global check timeout is lower, since conda's resolver routinely exceeds 25s.
+
+### 5.5 Stage 6: Distribution Release Upgrade Detection
+
+At the very end of the run (after the execution summary, and also on the zero-update path), [`detectDistroUpgrade()`](src/core/distro.ts) checks whether a newer distribution release exists. The identity comes from `/etc/os-release`; the check is read-only, Linux-only, and bounded by a 6,000ms network timeout. Any network/parse failure degrades to "no upgrade" instead of failing the run.
+
+| Family | Detection Source | Upgrade Routine |
+| :--- | :--- | :--- |
+| Fedora | Bodhi `releases?state=current`, GA numeric releases only (EPEL/ELN excluded), strict max > current | `sudo dnf system-upgrade download --releasever=<next> -y` (stages the offline transaction) |
+| Ubuntu | Authoritative `do-release-upgrade -c` output; fallback to `changelogs.ubuntu.com/meta-release` | `sudo do-release-upgrade -f DistUpgradeViewNonInteractive` (when the upgrader exists) |
+| Debian | `deb.debian.org/debian/dists/stable/Release` (`Version`/`Codename`) vs. `VERSION_ID` | *Report only*: no unattended in-place path; guidance to switch suites and run `sudo apt update && sudo apt full-upgrade` |
+
+Behavioral contract:
+1. **Always reported, never auto-applied by `--yes`**: `--yes` keeps its meaning for package updates; a distribution upgrade is a heavier operation and only runs when the user confirms interactively or explicitly passes `--upgrade-distro` (`-U`). Without a TTY and without `-U`, the run prints the exact command and finishes with exit code `0`.
+2. **`--dry-run` prints the plan** (`[DRY RUN] Would run: ...`) and executes nothing.
+3. **`--no-distro-upgrade` disables the stage entirely.**
+4. **Never reboots**: Fedora stages packages and reports `sudo dnf system-upgrade reboot`; Ubuntu reports its own restart requirement. The reboot decision always belongs to the user.
+5. **Sudo is acquired once** through `ensureSudo()` right before applying, with `startSudoKeepAlive()` held for the duration, and non-interactive credentials are re-verified (`sudo -n true`) before any privileged step.
+6. **Step timeout is raised to one hour** for distribution upgrade commands, since downloading a release and running a full upgrade legitimately exceed the 180s package-step default.
+7. **Unsupported families report guidance and exit `0`**, except when an attempted upgrade fails, which sets exit code `1`.
 
 ---
 

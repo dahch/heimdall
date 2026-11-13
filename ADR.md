@@ -366,3 +366,90 @@ All package queries are dispatched in parallel via `Promise.all` with a strict 3
     - An extra `flatpak list` subprocess runs only on the privilege-denied path, keeping the happy path at two commands.
     - Both scopes run unconditionally even when all pending refs belong to one of them; `flatpak` reports "Nothing to do" as a zero exit, so the cost is a few hundred milliseconds of no-op work rather than a failure.
 
+
+---
+
+## ADR-013: Broadening Python Ecosystem Coverage with `uv`, `poetry` and `conda`
+
+- **Status**: Accepted
+- **Date**: 2026-11-13
+- **Context**:
+  Heimdall already covered `pip` (user site-packages) and `pipx` (isolated CLI tools), but the most widely adopted Python workflows in 2026 are dominated by three additional managers:
+  1. **`uv`** replaced `pipx` and `pip` for many developers. Its globally installed *tools* live in isolated environments (`~/.local/share/uv/tools`) and are managed with `uv tool list`, `uv tool upgrade --all` and `uv tool install`. `uv tool list` has no `--outdated` flag, so latest versions must be resolved elsewhere.
+  2. **`poetry`** self-manages its own executable upgrade path with `poetry self update`; project dependency updates are deliberately out of scope because Heimdall never mutates project lockfiles.
+  3. **`conda`** (Anaconda, Miniconda, Miniforge) has no `list --outdated` command at all; the only authoritative way to learn what `conda update --all` would do is a solver dry-run.
+
+- **Decision**:
+  1. **Native HTTP lookups over N+1 subprocesses** (upholding [ADR-004](#adr-004-native-http-registry-checks-over-subprocess-spawning-yarn--pipx)):
+     - `UvManager` parses `uv tool list` (`<tool> v<version>` lines, skipping the `- <executable>` entries) and queries `https://pypi.org/pypi/<pkg>/json` with a 3s abort signal.
+     - `PoetryManager` parses `poetry --version` and compares it against the PyPI `poetry` release.
+  2. **Cross-major honesty for uv**: `uv tool upgrade` respects the version constraints captured at install time, so tools pinned to an older major would otherwise be reported as updated while staying behind. `UvManager` therefore runs `uv tool upgrade --all` and then, for every item whose target crosses a major boundary, `uv tool install <pkg>@latest` (the documented way to replace constraints), mirroring the Bun/Yarn pattern of [ADR-002](#adr-002-bypassing-major-semver-range-restrictions-in-bun-and-yarn-global-packages).
+  3. **Solver dry-run for conda**: `CondaManager` runs `conda update --all --dry-run --json`, pairs `actions.LINK` with `actions.UNLINK` by package name, and reports only replacements of already-installed packages (new transitive links are solver side effects, not user-visible updates). The solver is granted a 60s budget independent of the global check timeout.
+  4. **Execution stays bulk and non-interactive**: `uv tool upgrade --all`, `poetry self update` and `conda update --all -y`; each runs only when updates were selected, so an empty selection produces zero steps and a success result.
+
+- **Consequences**:
+  - **Positive**:
+    - Heimdall now covers the five mainstream Python installation paths (`pip`, `pipx`, `uv`, `poetry`, `conda`), so Python users are no longer told their environment is up to date while `uv` tools or a conda base environment remain stale.
+    - The PyPI checks are parallel, bounded by 3s aborts, and degrade silently to "no update" when the network is unavailable.
+  - **Trade-offs / Mitigations**:
+    - `conda update --all --dry-run --json` is the slowest check in the suite; the 60s floor and the engine's 4-way concurrency limit keep it from starving other managers.
+    - Poetry plugins added via `poetry self add` are updated by `poetry self update` on modern Poetry releases; plugin-by-plugin reporting is intentionally omitted to avoid parsing unstable human-readable output.
+
+---
+
+## ADR-014: Linux Firmware Updates Through `fwupd` with Reboot Safety
+
+- **Status**: Accepted
+- **Date**: 2026-11-13
+- **Context**:
+  On Fedora and other Linux distributions, firmware (UEFI BIOS, Embedded Controller, SSD, docks, peripherals) is delivered through **fwupd** and driven by the `fwupdmgr` CLI: `fwupdmgr refresh`, `fwupdmgr get-updates`, `fwupdmgr update`. Firmware is therefore a natural fourth update domain next to system packages, language ecosystems and runtimes, but it differs from package updates in three important ways:
+  1. **The update phase can reboot the machine.** `fwupdmgr update` asks whether to restart, and applying UEFI capsules requires a power cycle. An updater that runs unattended and answers every prompt cannot be allowed to reboot a user's session.
+  2. **Metadata freshness drives correctness.** Without `fwupdmgr refresh`, `get-updates` can serve stale LVFS metadata and miss published releases.
+  3. **Output is prose by default.** The human-readable listing is localized and version-dependent, so parsing it is fragile; fwupd exposes a stable `--json` payload.
+
+- **Decision**:
+  1. **Detect only on Linux**: `FirmwareManager.isAvailable()` requires `process.platform === 'linux'` and a resolvable `fwupdmgr`. Non-Linux hosts skip the manager entirely.
+  2. **Check phase is read-only and unprivileged**: `checkUpdates()` runs a best-effort `fwupdmgr refresh` (failures are non-fatal — stale metadata still beats a hard failure) and parses `fwupdmgr --json get-updates`. Each device yields one `firmware` item with the inserted `Version` and the first pending release `Version`, so firmware shows up in the same aggregated table as every other update.
+  3. **Tolerate legacy exit codes**: older fwupd releases exit non-zero to mean "no updates available", so a parsable JSON payload takes precedence over the exit code; errors are only reported when no JSON was produced.
+  4. **Update phase is sudo-gated and reboot-safe**: `FirmwareManager` declares `requiresSudo`, re-verifies `sudo -n true` before mutating anything ([ADR-011](#adr-011-interactive-sudo-acquisition-in-the-cli-with-ticket-keep-alive)), then runs `sudo fwupdmgr refresh --force` followed by `sudo fwupdmgr update -y --no-reboot-check --no-unreported-check --no-metadata-check`. `--no-reboot-check` guarantees fwupdmgr never reboots on its own; `--no-unreported-check` and `--no-metadata-check` suppress the remaining interactive questions so the step cannot hang with `stdin: 'ignore'`.
+  5. **Report, then let the user reboot**: the summary states that firmware was applied; the machine reboots only when the user decides to, which is the only safe default for unattended runs.
+
+- **Consequences**:
+  - **Positive**:
+    - Linux users get firmware advisories in the same table as package updates and can apply them with a single confirmation.
+    - Unattended `hmd --yes` runs can never trigger a surprise reboot.
+    - JSON parsing keeps the adapter stable across fwupd 1.x and 2.x.
+  - **Trade-offs / Mitigations**:
+    - Pending firmware only takes effect after a reboot; the manager cannot verify the post-boot result and intentionally does not claim to.
+    - Some vendors require BIOS admin passwords or manual capsule approval; the step then fails with the sanitized fwupd error, leaving every other manager's work intact.
+
+---
+
+## ADR-015: End-of-Run Distribution Release Upgrade Detection with Mandatory Confirmation
+
+- **Status**: Accepted
+- **Date**: 2026-11-13
+- **Context**:
+  Heimdall kept package managers and firmware current, but a host can be fully patched and still be one distribution release behind (Fedora 44 with Fedora 45 available, Ubuntu 24.04 with 26.04 LTS available, Debian 12 with 13). Users had no signal for this inside the tool, and the manual commands differ wildly per family:
+  - Fedora uses the offline `dnf system-upgrade download --releasever=N` flow followed by `dnf system-upgrade reboot`.
+  - Ubuntu ships `do-release-upgrade -c` for detection and a non-interactive frontend for automation.
+  - Debian has no supported unattended in-place upgrader: `sources.list` must switch suites deliberately before `apt full-upgrade`.
+  A release upgrade is also categorically heavier than a package update — it can take an hour, replaces the whole userland, and normally ends in a reboot — so silently applying it (especially under `--yes`) would be unacceptable.
+
+- **Decision**:
+  1. **A dedicated stage instead of a package manager**: `src/core/distro.ts` exposes `detectDistroUpgrade()` and `applyDistroUpgrade()`. Registering it as a `PackageManager` would have mixed OS releases into the aggregated package table and into `--only`/`--exclude` semantics; instead the CLI runs it after the summary and also on the zero-update path.
+  2. **Read-only, resilient detection**: identity comes from `/etc/os-release`. Fedora reads Bodhi's `releases?state=current` and considers only GA numeric releases (EPEL/ELN excluded), requiring a strict max > installed. Ubuntu prefers its own `do-release-upgrade -c` (authoritative LTS rules) and falls back to `changelogs.ubuntu.com/meta-release`. Debian compares `VERSION_ID` with the `stable` suite's `Version`. Every lookup is bounded (default 6s) and any failure degrades to "no upgrade" rather than failing the run.
+  3. **Report always, apply only on explicit consent**: the release is always announced with its exact command. Applying requires either an interactive `p.confirm` (default `false`) or the explicit `-U/--upgrade-distro` flag. `--yes` never applies it: unattended runs only print the command. `--no-distro-upgrade` disables the stage.
+  4. **Never reboot**: Fedora stages the transaction (`sudo dnf system-upgrade download --releasever=<next> -y`) and reports `sudo dnf system-upgrade reboot` for the user to run when ready. Ubuntu runs `sudo do-release-upgrade -f DistUpgradeViewNonInteractive` and reports its restart requirement. Debian is guidance-only (switch codename, then `sudo apt update && sudo apt full-upgrade`).
+  5. **Reuse the step machinery**: `runStep()` was extracted from `BasePackageManager.executeStep()` so the distro stage shares dry-run emulation, streaming callbacks, sanitized errors and timeouts. Distro steps get a one-hour budget because release downloads and full upgrades legitimately exceed the 180s package default.
+  6. **Sudo at the last responsible moment**: the ticket is acquired through `ensureSudo()` only when the user actually opts in, kept alive for the duration, and re-verified through `sudo -n true` inside `applyDistroUpgrade()`.
+
+- **Consequences**:
+  - **Positive**:
+    - A fully patched system now surfaces "Fedora Linux 45 is available (current: 44)" with the exact staging command, answering the question users actually ask after `dnf upgrade`.
+    - Unattended automation cannot accidentally reinstall the OS: consent is mandatory and reboots are always manual.
+    - Dry-run shows the exact command that would be staged, keeping the simulation honest.
+  - **Trade-offs / Mitigations**:
+    - Fedora staging can download gigabytes. `hmd` asks first, the step streams progress into the spinner, and the one-hour budget prevents silent timeouts mid-download.
+    - Ubuntu's upgrade takes over the terminal session and may restart services; the non-interactive frontend keeps it from blocking on prompts, and the summary documents the reboot requirement.
+    - Debian users still do the manual suite switch, because rewriting `sources.list` automatically has no safe rollback. Heimdall reports the exact codename transition instead of guessing.

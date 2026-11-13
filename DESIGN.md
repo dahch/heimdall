@@ -31,9 +31,11 @@ flowchart TD
         Pool --> QueryBrew["Homebrew\nbrew outdated --json=v2"]
         Pool --> QueryNPM["npm\nnpm outdated -g --json"]
         Pool --> QueryYarn["Yarn\nHTTP registry.npmjs.org"]
-        Pool --> QueryPipx["pipx\nHTTP pypi.org API"]
+        Pool --> QueryPipx["pipx / uv / poetry\nHTTP pypi.org API"]
+        Pool --> QueryConda["conda\nsolver dry-run --json"]
+        Pool --> QueryFwupd["fwupd\nfwupdmgr refresh + --json get-updates"]
         Pool --> QueryOthers["Other Managers\n(pnpm, bun, pip, gem, port, mas, apt, dnf, flatpak)"]
-        QueryBrew & QueryNPM & QueryYarn & QueryPipx & QueryOthers --> AggUpdates["Aggregate Updates & Warnings"]
+        QueryBrew & QueryNPM & QueryYarn & QueryPipx & QueryConda & QueryFwupd & QueryOthers --> AggUpdates["Aggregate Updates & Warnings"]
     end
 
     subgraph Phase1_Review ["Interactive Review & Decision Gate"]
@@ -54,7 +56,7 @@ flowchart TD
         SudoAcquire -- "Yes" --> EnsureTicket["ensureSudo()\n(sudo -n true, else sudo -v on TTY)\n+ startSudoKeepAlive()"]
         EnsureTicket --> EngineExec
         EngineExec --> ManagerLoop["For each selected manager"]
-        ManagerLoop --> SudoPreCheck{"Privilege Check\n(MacPorts / APT / DNF / Flatpak system)"}
+        ManagerLoop --> SudoPreCheck{"Privilege Check\n(MacPorts / APT / DNF / Flatpak system / Firmware)"}
         SudoPreCheck -- "sudo -n true fails" --> FastFail["Fail Step Fast with Guidance"]
         SudoPreCheck -- "Privileges OK or User" --> ExecRoutine["Execute Manager Update Routine"]
         ExecRoutine --> StepExec["BasePackageManager.executeStep()"]
@@ -76,11 +78,22 @@ flowchart TD
 
     subgraph SummaryStage ["Stage 5: Final Presentation & Exit"]
         FinalSummary --> RenderSummary["Render Execution Summary Table & Durations"]
-        RenderSummary --> EvalStatus{"Any failures?"}
+        RenderSummary --> DistroCheck["detectDistroUpgrade()\n(os-release + Bodhi / do-release-upgrade / Debian stable)"]
+        DistroCheck --> DistroFound{"Newer release?"}
+        DistroFound -- "No" --> EvalStatus
+        DistroFound -- "Yes, unsupported" --> DistroGuide["Report official upgrade guidance"] --> EvalStatus
+        DistroFound -- "Yes, supported" --> DistroConsent{"Interactive confirm\nor --upgrade-distro?\n(never --yes)"}
+        DistroConsent -- "No" --> DistroSkip["Print exact command, change nothing"] --> EvalStatus
+        DistroConsent -- "Yes" --> DistroApply["applyDistroUpgrade()\n(1h step timeout, sudo + keep-alive)"]
+        DistroApply --> DistroReboot["Report reboot command\n(never reboots)"]
+        DistroReboot --> EvalStatus
+        EvalStatus{"Any failures?"}
         EvalStatus -- "failedCount == 0" --> ExitSuccess(["Exit 0 (Success)"])
         EvalStatus -- "failedCount > 0" --> ExitWarn(["Exit 1 (Warnings / Failures)"])
     end
 ```
+
+> The distro stage also runs on the zero-update path, so a fully patched system still reports that a newer OS release is available.
 
 ---
 
@@ -141,7 +154,7 @@ sequenceDiagram
 
 ## 4. Provider Hierarchy & Class Relationships
 
-All package managers inherit from the abstract [`BasePackageManager`](src/managers/base.ts#L13), providing a uniform template method for step execution, logging, and error tracking:
+All package managers inherit from the abstract [`BasePackageManager`](src/managers/base.ts#L14), providing a uniform template method for step execution, logging, and error tracking:
 
 ```mermaid
 classDiagram
@@ -172,6 +185,7 @@ classDiagram
     BasePackageManager <|-- AptManager : system
     BasePackageManager <|-- DnfManager : system
     BasePackageManager <|-- FlatpakManager : system
+    BasePackageManager <|-- FirmwareManager : system (Linux fwupd)
 
     BasePackageManager <|-- NpmManager : runtime
     BasePackageManager <|-- PnpmManager : runtime
@@ -180,6 +194,9 @@ classDiagram
 
     BasePackageManager <|-- PythonPipManager : language
     BasePackageManager <|-- PipxManager : language
+    BasePackageManager <|-- UvManager : language
+    BasePackageManager <|-- PoetryManager : language
+    BasePackageManager <|-- CondaManager : language
     BasePackageManager <|-- CargoManager : language
     BasePackageManager <|-- RubyGemManager : language
 
@@ -188,7 +205,7 @@ classDiagram
 
 ### Responsibilities of [`BasePackageManager`](src/managers/base.ts):
 - **Availability Default**: Implements `isAvailable()` by invoking `commandExists(this.binary)` using system `which`. Concrete classes override this when additional path validation is required (e.g. `RubyGemManager` skips `/usr/bin/gem`, `CargoManager` checks both `cargo` and `rustup`).
-- **Standardized Step Execution ([`executeStep`](src/managers/base.ts#L31))**:
+- **Standardized Step Execution ([`executeStep`](src/managers/base.ts#L41))**:
   - Intercepts `options.dryRun` to prevent subprocess execution while providing simulated console feedback.
   - Spawns commands via [`safeExec`](src/utils/exec.ts#L40) with default 180s timeouts.
   - Emits real-time progress callbacks (`onStepStart`, `onStepProgress`, `onStepEnd(step, success, error, durationMs)`).
@@ -227,16 +244,19 @@ flowchart LR
 ```
 
 ### Specific Resilience Strategies:
-1. **Interactive Sudo Acquisition & Non-Interactive Pre-Verification**: When any manager selected for update declares `requiresSudo` (MacPorts, APT, DNF, Flatpak), the CLI acquires the ticket once before execution: `sudo -n true` first, then `sudo -v` with `stdio: 'inherit'` on the controlling terminal when no ticket is cached and stdin is a TTY. A 60s keep-alive (`sudo -n -v`) refreshes the ticket so long upgrades cannot be interrupted by a hidden password prompt. Afterwards, managers re-test `sudo -n true` before privileged steps and fail immediately with actionable advice if credentials vanished, avoiding a 3-minute freeze.
+1. **Interactive Sudo Acquisition & Non-Interactive Pre-Verification**: When any manager selected for update declares `requiresSudo` (MacPorts, APT, DNF, Flatpak system, Firmware), the CLI acquires the ticket once before execution: `sudo -n true` first, then `sudo -v` with `stdio: 'inherit'` on the controlling terminal when no ticket is cached and stdin is a TTY. A 60s keep-alive (`sudo -n -v`) refreshes the ticket so long upgrades cannot be interrupted by a hidden password prompt. Afterwards, managers re-test `sudo -n true` before privileged steps and fail immediately with actionable advice if credentials vanished, avoiding a 3-minute freeze.
 2. **Bun & Yarn Global Semver Override**: Standard `bun update -g` and `yarn global upgrade` obey version ranges stored in their global manifest files, ignoring newer major releases. Both managers prepend explicit `add -g <pkg>@latest` steps to force upgrades across major semver boundaries.
 3. **Bun Coexistence with Homebrew**: Calling `bun upgrade` when Bun was installed via Homebrew produces errors or broken symlinks. `BunManager` inspects `which bun` and skips self-upgrade if managed by Homebrew.
 4. **npm Targeted Batching, Multi-Tier Fallback & Script Recovery**: `NpmManager` targets outdated packages directly via `npm install -g --legacy-peer-deps -- <pkg>@<latest>...`. Package targets use POSIX `--` separation to avoid colliding with CLI flags. If only 1 package is outdated, it proceeds straight to isolated install; if a batch install fails (e.g. peer conflicts), the batch step is marked `status = 'skipped'` (fallback trigger) and it falls back to isolated per-package installation. If an individual package fails due to install lifecycle scripts (`only-allow pnpm`, `node-gyp`), it automatically retries with `--ignore-scripts -- <target>`.
-5. **Native HTTP Registry Lookups (Yarn & Pipx)**: Rather than spawning hundreds of `npm view` or `pip index` sub-processes, Yarn and pipx make concurrent HTTP `fetch` requests directly to `registry.npmjs.org` and `pypi.org` with 3-second abort signals.
+5. **Native HTTP Registry Lookups (Yarn, pipx, uv & Poetry)**: Rather than spawning hundreds of `npm view` or `pip index` sub-processes, Yarn, pipx, uv and Poetry make concurrent HTTP `fetch` requests directly to `registry.npmjs.org` and `pypi.org` with 3-second abort signals.
 6. **Homebrew Non-Redundant Targeted Upgrades**: `HomebrewManager` inspects pending item classifications. If only casks are pending, it runs `brew upgrade --cask` (bypassing formula graph resolution). If only formulae are pending, it runs `brew upgrade --formula`. If both are pending, it runs `brew upgrade`.
 7. **Sanitized Error Extraction**: Raw stderr and stdout often contain non-fatal runtime warnings (`npm warn`, `warning:`, `notice`) or truncated JSON dumps that mask the actual failure. `extractErrorMessage()` filters ambient notices, extracts specific error lines (`npm error`, `fatal:`, `command failed`), and cleanly truncates output for compact display.
 8. **DNF Safe Refresh & Interactive Autoremove**: `DnfManager` runs `sudo dnf upgrade -y --refresh` ensuring repository metadata freshness before upgrade. It decouples `sudo dnf autoremove -y`, prompting the user interactively via `confirmAction` (automatically approved under `--yes` or simulated under `--dry-run`).
 9. **Flatpak Dual-Scope Awareness**: `FlatpakManager` queries updates from both installations (`--user` and `--system`, deduplicated) and mirrors that split at execution time: `flatpak update --user` always runs unprivileged, while `sudo flatpak update --system` executes only with root or a cached ticket. Without privileges the system step is marked `failed` with sudo guidance when system-scope apps exist, or `skipped` when they do not — never silently reporting success for work it did not do.
 10. **APT Kept-Back Avoidance & Gated Cleanup**: `AptManager` runs `sudo apt-get upgrade -y --with-new-pkgs` so dependency-gaining upgrades are not left `kept back` behind a success summary, and gates `sudo apt-get autoremove -y` through the same `confirmAction` contract as DNF (skipped when declined or after a failed upgrade).
+11. **Python Ecosystem Coverage (uv, Poetry, Conda)**: `UvManager` parses `uv tool list` and resolves latest releases over the PyPI HTTP API, then runs `uv tool upgrade --all` plus `uv tool install <pkg>@latest` for tools whose pending target crosses a major boundary (uv respects install-time constraints on upgrade). `PoetryManager` compares `poetry --version` with PyPI and runs `poetry self update`. `CondaManager` has no outdated listing, so it runs `conda update --all --dry-run --json`, pairs `LINK`/`UNLINK` solver actions by package name, and applies them with `conda update --all -y` on a 60s solver budget.
+12. **Linux Firmware via fwupd**: `FirmwareManager` refreshes LVFS metadata (`fwupdmgr refresh`, best-effort and unprivileged) and parses `fwupdmgr --json get-updates`, tolerating legacy non-zero "no updates" exit codes. Updates run as `sudo fwupdmgr refresh --force` then `sudo fwupdmgr update -y --no-reboot-check --no-unreported-check --no-metadata-check`, so firmware is applied without ever rebooting the machine automatically: the user reboots on their own terms.
+13. **Distribution Release Upgrade Stage**: After the package summary (and on the zero-update path), `detectDistroUpgrade()` reads `/etc/os-release` and checks the family-specific release index: Fedora uses Bodhi's current GA releases, Ubuntu prefers its own `do-release-upgrade -c` (falling back to `meta-release`), and Debian compares against the `stable` suite. A detected release is always reported; it is applied only after an interactive confirmation or the explicit `--upgrade-distro` flag — `--yes` never auto-applies an OS upgrade. Fedora runs `sudo dnf system-upgrade download --releasever=<next> -y` and hands the reboot to the user; Ubuntu runs the non-interactive upgrader; Debian only receives guidance because it has no unattended in-place path. Sudo is acquired immediately before applying, the ticket is kept alive, and the step budget is raised to one hour.
 
 ---
 

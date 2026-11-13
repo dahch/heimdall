@@ -19,7 +19,8 @@ heimdall/
 │   ├── cli.ts                # CLI entry point, Commander flag parsing, Clack interactive UI
 │   ├── types.ts              # Canonical TypeScript interfaces and data models
 │   ├── core/
-│   │   └── engine.ts         # Orchestrator: availability scanning, concurrency pool, execution loop
+│   │   ├── engine.ts         # Orchestrator: availability scanning, concurrency pool, execution loop
+│   │   └── distro.ts         # Distro release detection (Fedora/Ubuntu/Debian) and safe upgrade staging
 │   ├── managers/
 │   │   ├── base.ts           # Abstract BasePackageManager (executeStep, dry-run branching)
 │   │   ├── registry.ts       # Manager registry factory and include/exclude filtering
@@ -30,11 +31,15 @@ heimdall/
 │   │   ├── yarn.ts           # Yarn v1 global adapter (HTTP registry check, add latest)
 │   │   ├── python.ts         # Python pip adapter (pip3 user site-packages, PEP 668)
 │   │   ├── pipx.ts           # pipx adapter (PyPI JSON API lookups, isolated venvs)
+│   │   ├── uv.ts             # uv tools adapter (tool list + PyPI lookups, cross-major reinstalls)
+│   │   ├── poetry.ts         # Poetry self-update adapter (version banner + PyPI lookup)
+│   │   ├── conda.ts          # Conda adapter (solver dry-run LINK/UNLINK pairing)
 │   │   ├── cargo.ts          # Rust Cargo adapter (rustup toolchains, cargo-install-update)
 │   │   ├── gem.ts            # RubyGems adapter (skips Apple system Ruby /usr/bin/gem)
 │   │   ├── macports.ts       # MacPorts adapter (sudo pre-checks, selfupdate)
 │   │   ├── mas.ts            # Mac App Store CLI adapter
-│   │   └── linux.ts          # Linux APT, DNF, and Flatpak adapters (dual-scope Flatpak)
+│   │   ├── linux.ts          # Linux APT, DNF, and Flatpak adapters (dual-scope Flatpak)
+│   │   └── firmware.ts       # Linux firmware adapter (fwupd refresh/get-updates/update)
 │   └── utils/
 │       ├── exec.ts           # safeExec wrapper around execa, commandExists, ensureSudo + keep-alive
 │       ├── error.ts          # Clean actionable error extractor (extractErrorMessage)
@@ -42,6 +47,7 @@ heimdall/
 │       └── version.ts        # Dynamic package metadata resolution from package.json
 ├── tests/
 │   ├── engine.test.ts        # Unit tests for UpdaterEngine, concurrency pool, and filters
+│   ├── distro.test.ts        # Unit tests for distro release detection and upgrade staging
 │   ├── exec.test.ts          # Unit tests for safeExec and commandExists
 │   ├── formatting.test.ts    # Unit tests for extractErrorMessage and rendering utilities
 │   ├── managers.test.ts      # Unit tests for manager parsers, HTTP mocking, and fallback logic
@@ -70,13 +76,13 @@ When modifying or extending the codebase, you **MUST** uphold the following rule
 - In [`UpdaterEngine`](src/core/engine.ts), individual manager errors are isolated so remaining managers complete unimpeded.
 
 ### 3.3 Strict Dry-Run Fidelity
-- All execution logic must route through [`BasePackageManager.executeStep()`](src/managers/base.ts#L31) or inspect `options.dryRun`.
+- All execution logic must route through [`BasePackageManager.executeStep()`](src/managers/base.ts#L41) or inspect `options.dryRun`.
 - When `options.dryRun` is `true`, no destructive shell commands may be executed. `executeStep` logs `[DRY-RUN] Would run: <command>` and returns `status: 'success'` with `durationMs: 0`.
 
 ### 3.4 Explicit Sudo Acquisition & Pre-Verification
 - Declare `readonly requiresSudo = true` on any manager whose routine calls `sudo`. The CLI reads this flag to acquire the ticket once, before execution starts.
 - Never invoke `sudo <command>` directly without verifying non-interactive privileges beforehand. Subprocesses are spawned with `stdin: 'ignore'`, so a password prompt inside a step can only fail or hang.
-- Follow the pattern established in [`MacPortsManager`](src/managers/macports.ts#L96-L117), [`AptManager`](src/managers/linux.ts#L91-L113), and [`DnfManager`](src/managers/linux.ts#L452-L474), which calls the shared [`BasePackageManager.hasPasswordlessSudo()`](src/managers/base.ts#L29) helper (uses `safeExec('sudo', ['-n', 'true'], { timeoutMs: 3000 })` so tests can intercept it):
+- Follow the pattern established in [`MacPortsManager`](src/managers/macports.ts#L96-L117), [`AptManager`](src/managers/linux.ts#L91-L113), and [`DnfManager`](src/managers/linux.ts#L490-L512), which calls the shared [`BasePackageManager.hasPasswordlessSudo()`](src/managers/base.ts#L29) helper (uses `safeExec('sudo', ['-n', 'true'], { timeoutMs: 3000 })` so tests can intercept it):
   ```typescript
   if (!options.dryRun && process.getuid?.() !== 0) {
     if (!(await this.hasPasswordlessSudo())) {
@@ -94,7 +100,7 @@ When modifying or extending the codebase, you **MUST** uphold the following rule
     }
   }
   ```
-- [`ensureSudo()`](src/utils/exec.ts#L43) in [`src/cli.ts`](src/cli.ts#L181-L199) prompts for the password through `sudo -v` with `stdio: 'inherit'` on the controlling terminal (never in dry-run, never as root, never without a TTY), and [`startSudoKeepAlive()`](src/utils/exec.ts#L62) refreshes the ticket every 60s during execution. Never tell users to run `sudo hmd`: the CLI is installed under the user's `PATH` and root's `secure_path` does not include it.
+- [`ensureSudo()`](src/utils/exec.ts#L43) in [`src/cli.ts`](src/cli.ts#L342-L354) prompts for the password through `sudo -v` with `stdio: 'inherit'` on the controlling terminal (never in dry-run, never as root, never without a TTY), and [`startSudoKeepAlive()`](src/utils/exec.ts#L62) refreshes the ticket every 60s during execution. Never tell users to run `sudo hmd`: the CLI is installed under the user's `PATH` and root's `secure_path` does not include it.
 
 ### 3.5 Native HTTP Over N+1 Subprocesses
 - When checking outdated packages for tools without bulk outdated commands (e.g. Yarn, pipx), **do not spawn child processes in a loop** (`npm view` or `pip index`).
@@ -121,6 +127,17 @@ When modifying or extending the codebase, you **MUST** uphold the following rule
 - It defines two executable binaries in `package.json`: `hmd` (primary CLI) and `heimdall` (canonical alias).
 - Production releases are strictly managed through `.github/workflows/publish.yml`, which verifies tag parity against `package.json`, runs tests and typechecks via Bun, and publishes with cryptographic provenance attestations (`npm publish --provenance`) (see [ADR-009](ADR.md#adr-009-scoped-npm-publication-dahchheimdall-with-provenance-and-bun-powered-github-actions-ci)).
 
+### 3.11 Firmware Updates Never Reboot
+- [`FirmwareManager`](src/managers/firmware.ts) drives fwupd on Linux: `fwupdmgr refresh`, `fwupdmgr --json get-updates`, `fwupdmgr update`.
+- Always pass `-y --no-reboot-check --no-unreported-check --no-metadata-check` to `fwupdmgr update`, so a firmware step can never reboot the machine or open an upload prompt mid-run.
+- Parse JSON rather than the human-readable listing (`fwupdmgr --json get-updates`), and treat a parsable JSON payload as authoritative even when the exit code is non-zero (older fwupd releases use that to mean "no updates").
+
+### 3.12 Distribution Upgrades Are Opt-In and Never Reboot
+- [`detectDistroUpgrade()`](src/core/distro.ts) runs at the end of every Linux run (also on the zero-update path) and must stay read-only: os-release parsing plus a bounded HTTPS lookup (Bodhi / `do-release-upgrade -c` / Debian `stable` suite). It never throws; failures mean "no upgrade".
+- A detected release must always be reported with its exact command. `--yes` must **never** auto-apply it: apply only after an interactive `p.confirm` or the explicit `--upgrade-distro` (`-U`) flag. `--no-distro-upgrade` skips the stage entirely.
+- [`applyDistroUpgrade()`](src/core/distro.ts) must never reboot. Fedora stages with `sudo dnf system-upgrade download --releasever=<next> -y` and hands `sudo dnf system-upgrade reboot` to the user; Ubuntu uses `do-release-upgrade -f DistUpgradeViewNonInteractive`; Debian is guidance-only (no unattended in-place path).
+- Route every upgrade command through the shared [`runStep()`](src/managers/base.ts) (exported specifically for this) with a one-hour budget, acquire the sudo ticket through `ensureSudo()` first, and keep `startSudoKeepAlive()` alive for the duration.
+
 ---
 
 ## 4. How to Implement a New Package Manager
@@ -128,7 +145,7 @@ When modifying or extending the codebase, you **MUST** uphold the following rule
 Follow this step-by-step recipe to add a new package manager (e.g. `dnf`, `zypper`, `nix`):
 
 ### Step 1: Create the Manager Class
-Create `src/managers/<id>.ts` extending [`BasePackageManager`](src/managers/base.ts#L13):
+Create `src/managers/<id>.ts` extending [`BasePackageManager`](src/managers/base.ts#L14):
 
 ```typescript
 import { BasePackageManager } from './base.js';

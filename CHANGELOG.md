@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### 🚀 Features
+- **python**: add `uv` tools adapter (PyPI lookups, cross-major reinstalls)
+- **python**: add `poetry` self-update adapter
+- **python**: add `conda` adapter driven by the solver dry-run
+- **firmware**: add Linux `fwupd` adapter (`refresh` + `get-updates` + `update`, reboot-safe)
+- **distro**: detect and offer the next distribution release (Fedora via Bodhi, Ubuntu via `do-release-upgrade -c`, Debian via the stable suite)
+
+### ⚠️ Behavior Changes
+- New managers are registered by default and can be targeted with `--only uv,poetry,conda,firmware` (or excluded with `--exclude`).
+- `firmware` runs `sudo fwupdmgr refresh --force` and `sudo fwupdmgr update -y --no-reboot-check --no-unreported-check --no-metadata-check`, so pending firmware is applied without rebooting the machine automatically.
+- `conda` checks with `conda update --all --dry-run --json` on a 60-second solver budget, even when `--timeout` is lower.
+- Every run now ends with a distribution release check: a newer OS release is reported, and applied only after confirmation (or `--upgrade-distro`). `--yes` reports it but never applies it, and Heimdall never reboots: Fedora stages `dnf system-upgrade` and leaves `sudo dnf system-upgrade reboot` to the user.
+- New flags: `--no-distro-upgrade` (skip the check) and `-U, --upgrade-distro` (apply without asking).
+
+### 🐛 Bug Fixes
+- **npm**: stop reporting the diagnostic `error`/`problems` keys of `npm outdated -g --json` as a package called `error`, and surface the real npm error summary when no update is found.
+
+### 📝 Documentation
+- README/SPEC/DESIGN/AGENTS: document the four new managers, the firmware and distribution-release stages, the new flags, and ADR-013/014/015.
+- Fix stale source line anchors for `BasePackageManager`, `executeStep`, `DnfManager` and the CLI sudo block.
+
 ## [v1.2.0] - 2026-10-15
 
 ### 🚀 Features
