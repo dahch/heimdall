@@ -3,6 +3,11 @@ import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import { createDefaultManagers, filterManagers } from './managers/registry.js';
 import { UpdaterEngine } from './core/engine.js';
+import {
+  applyDistroUpgrade,
+  detectDistroUpgrade,
+  type DistroUpgradePlan,
+} from './core/distro.js';
 import { renderUpdatesTable, renderExecutionSummary, formatDuration } from './utils/formatting.js';
 import { getPackageMetadata } from './utils/version.js';
 import { ensureSudo, startSudoKeepAlive } from './utils/exec.js';
@@ -15,6 +20,156 @@ interface CliOptions {
   exclude?: string;
   timeout?: string;
   verbose?: boolean;
+  distroUpgrade?: boolean;
+  upgradeDistro?: boolean;
+}
+
+/**
+ * Final stage: detect a newer distribution release (Fedora n+1, Ubuntu/Debian) and,
+ * when supported, offer to apply it. Never auto-applies under `--yes`.
+ */
+async function offerDistroUpgrade(
+  options: CliOptions,
+  timeoutMs: number,
+  isSimulated: boolean
+): Promise<boolean> {
+  if (process.platform !== 'linux' || options.distroUpgrade === false) return true;
+
+  const scanSpinner = p.spinner();
+  scanSpinner.start('Checking for distribution release upgrades...');
+
+  let plan: DistroUpgradePlan | null = null;
+  try {
+    plan = await detectDistroUpgrade({ timeoutMs: Math.max(timeoutMs, 6000) });
+  } catch {
+    plan = null;
+  }
+
+  scanSpinner.stop(
+    plan
+      ? `Distribution upgrade available: ${plan.targetName}`
+      : 'Distribution release is up to date'
+  );
+
+  if (!plan) {
+    if (options.verbose) {
+      p.log.step(pc.dim('No newer distribution release detected.'));
+    }
+    return true;
+  }
+
+  p.note(
+    [
+      `${pc.bold(plan.targetName)} is available ${pc.dim(`(current: ${plan.currentVersion})`)}.`,
+      plan.supported
+        ? 'Heimdall can stage/apply the upgrade; it never reboots the machine by itself.'
+        : 'Heimdall cannot apply this upgrade automatically.',
+    ].join('\n'),
+    'Distribution upgrade available'
+  );
+
+  for (const line of plan.guidance) {
+    p.log.step(pc.dim(`↳ ${line}`));
+  }
+
+  if (isSimulated) {
+    for (const step of plan.steps) {
+      p.log.info(pc.yellow(`[DRY RUN] Would run: ${[step.file, ...step.args].join(' ')}`));
+    }
+    return true;
+  }
+
+  if (!plan.supported) return true;
+
+  const autoApply = options.upgradeDistro === true;
+  const canPrompt = Boolean(process.stdin.isTTY) && !options.yes && !autoApply;
+
+  if (!autoApply && !canPrompt) {
+    const [first] = plan.steps;
+    if (first) {
+      p.log.info(
+        pc.dim(`Not applied automatically. Run: ${[first.file, ...first.args].join(' ')}`)
+      );
+    }
+    return true;
+  }
+
+  let proceed = autoApply;
+  if (!autoApply) {
+    const answer = await p.confirm({
+      message: `Apply the ${plan.targetName} release upgrade now?`,
+      initialValue: false,
+    });
+    if (p.isCancel(answer)) {
+      p.cancel('Distribution upgrade cancelled.');
+      return true;
+    }
+    proceed = answer;
+  }
+
+  if (!proceed) {
+    p.log.info(pc.yellow('Distribution upgrade skipped.'));
+    return true;
+  }
+
+  const upgradeSpinner = p.spinner();
+  let stopSudoKeepAlive: (() => void) | undefined;
+
+  if (process.getuid?.() !== 0) {
+    p.log.step(pc.dim('Requesting sudo privileges for the distribution upgrade...'));
+    if (!(await ensureSudo())) {
+      p.log.warn(
+        pc.yellow(
+          'Sudo privileges not granted: the distribution upgrade cannot run. Run "sudo -v" in this terminal and retry.'
+        )
+      );
+      return false;
+    }
+    stopSudoKeepAlive = startSudoKeepAlive();
+  }
+
+  upgradeSpinner.start(pc.dim('Running the distribution release upgrade...'));
+
+  let result;
+  try {
+    result = await applyDistroUpgrade(plan, {
+    onStepStart: (stepName) => upgradeSpinner.message(pc.dim(`Running: ${stepName}...`)),
+    onStepProgress: (_stepName, logLine) => {
+      if (!logLine) return;
+      const truncated = logLine.length > 55 ? `${logLine.slice(0, 52)}...` : logLine;
+      upgradeSpinner.message(pc.dim(truncated));
+    },
+    onStepEnd: (stepName, success, error, durationMs) => {
+      const mark = success ? pc.green('✔') : pc.red('✖');
+      const durStr = durationMs !== undefined ? pc.dim(` [${formatDuration(durationMs)}]`) : '';
+      const detail = error ? pc.red(` ↳ ${error.split('\n')[0]}`) : '';
+      upgradeSpinner.stop(`  ${mark} ${pc.dim(stepName)}${durStr}${detail}`);
+      upgradeSpinner.start(pc.dim('Working...'));
+    },
+    });
+  } finally {
+    stopSudoKeepAlive?.();
+  }
+
+  upgradeSpinner.stop(
+    result.success
+      ? pc.green('✔ Distribution upgrade routine completed')
+      : pc.red('✖ Distribution upgrade failed')
+  );
+
+  if (!result.success) {
+    if (result.error) p.log.error(pc.red(result.error));
+    return false;
+  }
+
+  if (plan.rebootRequired) {
+    p.note(
+      `Reboot to finish the upgrade:\n  ${pc.bold(plan.rebootCommand ?? 'sudo reboot')}`,
+      'Reboot required'
+    );
+  }
+
+  return true;
 }
 
 async function main() {
@@ -31,6 +186,11 @@ async function main() {
     .option('-x, --exclude <managers>', 'Exclude specified managers (comma-separated, e.g. macports,pip)')
     .option('-t, --timeout <ms>', 'Timeout per check in milliseconds', '25000')
     .option('-v, --verbose', 'Show detailed output and logs')
+    .option('--no-distro-upgrade', 'Skip the distribution release upgrade check at the end')
+    .option(
+      '-U, --upgrade-distro',
+      'Apply a detected distribution release upgrade without asking (never reboots)'
+    )
     .parse(process.argv);
 
   const options = program.opts<CliOptions>();
@@ -94,8 +254,9 @@ async function main() {
       pc.green('All detected package managers and global packages are completely up to date! 🎉'),
       'Status: Up to Date'
     );
-    p.outro(pc.cyan('No updates needed. Have a great day!'));
-    process.exit(0);
+    const distroOk = await offerDistroUpgrade(options, timeoutMs, options.dryRun ?? false);
+    p.outro(pc.cyan('No package updates needed. Have a great day!'));
+    process.exit(distroOk ? 0 : 1);
   }
 
   // Display outdated packages table
@@ -262,7 +423,10 @@ async function main() {
   // Stage 5: Final Summary
   console.log(renderExecutionSummary(summary.results));
 
-  if (summary.failedCount === 0) {
+  // Stage 6: Distribution release upgrade (Fedora n+1, Ubuntu/Debian)
+  const distroOk = await offerDistroUpgrade(options, timeoutMs, isSimulated);
+
+  if (summary.failedCount === 0 && distroOk) {
     p.outro(
       pc.bold(
         pc.green(
@@ -272,10 +436,11 @@ async function main() {
     );
   } else {
     process.exitCode = 1;
+    const distroNote = distroOk ? '' : ', distribution upgrade failed';
     p.outro(
       pc.bold(
         pc.yellow(
-          `Completed with warnings: ${summary.successCount} succeeded, ${summary.failedCount} failed (${formatDuration(summary.totalDurationMs)}).`
+          `Completed with warnings: ${summary.successCount} succeeded, ${summary.failedCount} failed${distroNote} (${formatDuration(summary.totalDurationMs)}).`
         )
       )
     );

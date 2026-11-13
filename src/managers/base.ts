@@ -45,50 +45,64 @@ export abstract class BasePackageManager implements PackageManager {
     options: ExecutionOptions,
     extraExecOptions?: SafeExecOptions
   ): Promise<UpdateStep> {
-    const startTime = Date.now();
-    options.onStepStart?.(stepName);
+    return runStep(stepName, file, args, options, extraExecOptions);
+  }
+}
 
-    if (options.dryRun) {
-      options.onStepProgress?.(stepName, `[DRY-RUN] Would run: ${file} ${args.join(' ')}`);
-      options.onStepEnd?.(stepName, true);
-      return {
-        name: stepName,
-        command: `${file} ${args.join(' ')}`,
-        status: 'success',
-        durationMs: 0,
-      };
-    }
+/**
+ * Executes one non-interactive update step with dry-run emulation, streaming callbacks
+ * and sanitized error extraction. Shared by package managers and the distro upgrader.
+ */
+export async function runStep(
+  stepName: string,
+  file: string,
+  args: string[],
+  options: ExecutionOptions,
+  extraExecOptions?: SafeExecOptions
+): Promise<UpdateStep> {
+  const startTime = Date.now();
+  options.onStepStart?.(stepName);
 
-    const result = await safeExec(file, args, {
-      ...extraExecOptions,
-      timeoutMs: options.timeoutMs ?? 180000, // 3 min per step
-      onData: (data) => {
-        if (options.onStepProgress) {
-          const lines = data.split('\n').map((l) => l.trim()).filter(Boolean);
-          if (lines.length > 0) {
-            options.onStepProgress(stepName, lines[lines.length - 1]);
-          }
-        }
-      },
-    });
-
-    const durationMs = Date.now() - startTime;
-    const success = result.success;
-    const rawOutput = [result.stderr, result.stdout].filter(Boolean).join('\n').trim();
-    const errorMsg = !success
-      ? (result.timedOut
-          ? `Step timed out after ${Math.round((options.timeoutMs ?? 180000) / 1000)}s`
-          : extractErrorMessage(rawOutput))
-      : undefined;
-
-    options.onStepEnd?.(stepName, success, errorMsg, durationMs);
-
+  if (options.dryRun) {
+    options.onStepProgress?.(stepName, `[DRY-RUN] Would run: ${file} ${args.join(' ')}`);
+    options.onStepEnd?.(stepName, true);
     return {
       name: stepName,
       command: `${file} ${args.join(' ')}`,
-      status: success ? 'success' : 'failed',
-      durationMs,
-      error: errorMsg,
+      status: 'success',
+      durationMs: 0,
     };
   }
+
+  const result = await safeExec(file, args, {
+    ...extraExecOptions,
+    timeoutMs: options.timeoutMs ?? 180000, // 3 min per step
+    onData: (data) => {
+      if (options.onStepProgress) {
+        const lines = data.split('\n').map((l) => l.trim()).filter(Boolean);
+        if (lines.length > 0) {
+          options.onStepProgress(stepName, lines[lines.length - 1]);
+        }
+      }
+    },
+  });
+
+  const durationMs = Date.now() - startTime;
+  const success = result.success;
+  const rawOutput = [result.stderr, result.stdout].filter(Boolean).join('\n').trim();
+  const errorMsg = !success
+    ? (result.timedOut
+        ? `Step timed out after ${Math.round((options.timeoutMs ?? 180000) / 1000)}s`
+        : extractErrorMessage(rawOutput))
+    : undefined;
+
+  options.onStepEnd?.(stepName, success, errorMsg, durationMs);
+
+  return {
+    name: stepName,
+    command: `${file} ${args.join(' ')}`,
+    status: success ? 'success' : 'failed',
+    durationMs,
+    error: errorMsg,
+  };
 }
