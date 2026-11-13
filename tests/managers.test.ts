@@ -1426,4 +1426,334 @@ valid-pkg.x86_64 1.2.3-1.fc39 updates
       expect(result.steps).toHaveLength(0);
     });
   });
+
+  describe('UvManager', () => {
+    it('parses uv tool list and reports only tools with a newer PyPI release', async () => {
+      const { UvManager } = await import('../src/managers/uv.js');
+      const manager = new UvManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      const execSpy = vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: 'black v24.10.0\n- black\n- blackd\nruff v0.6.9\n- ruff\n',
+        stderr: '',
+        exitCode: 0,
+        success: true,
+        timedOut: false,
+      });
+
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('black')) {
+          return { ok: true, json: async () => ({ info: { version: '25.1.0' } }) } as Response;
+        }
+        return { ok: true, json: async () => ({ info: { version: '0.6.9' } }) } as Response;
+      });
+
+      const result = await manager.checkUpdates();
+
+      expect(execSpy).toHaveBeenCalledWith('uv', ['tool', 'list'], expect.any(Object));
+      expect(result.updates).toEqual([
+        {
+          managerId: 'uv',
+          managerName: 'uv (Python tools)',
+          name: 'black',
+          currentVersion: '24.10.0',
+          latestVersion: '25.1.0',
+          type: 'uv-tool',
+        },
+      ]);
+
+      fetchSpy.mockRestore();
+    });
+
+    it('upgrades all tools and reinstalls tools pinned to an older major', async () => {
+      const { UvManager } = await import('../src/managers/uv.js');
+      const manager = new UvManager();
+      const executed: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executed.push(`${cmd} ${(args ?? []).join(' ')}`);
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const items = [
+        { managerId: 'uv', managerName: 'uv (Python tools)', name: 'black', currentVersion: '1.2.0', latestVersion: '2.0.0', type: 'uv-tool' },
+        { managerId: 'uv', managerName: 'uv (Python tools)', name: 'ruff', currentVersion: '0.6.9', latestVersion: '0.7.1', type: 'uv-tool' },
+      ];
+
+      const result = await manager.executeUpdate(items, { dryRun: false });
+
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(2);
+      expect(executed).toEqual(['uv tool upgrade --all', 'uv tool install black@latest']);
+    });
+  });
+
+  describe('PoetryManager', () => {
+    it('compares the installed poetry version against PyPI', async () => {
+      const { PoetryManager } = await import('../src/managers/poetry.js');
+      const manager = new PoetryManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: 'Poetry (version 1.8.5)\n',
+        stderr: '',
+        exitCode: 0,
+        success: true,
+        timedOut: false,
+      });
+
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue({ ok: true, json: async () => ({ info: { version: '2.1.1' } }) } as Response);
+
+      const result = await manager.checkUpdates();
+
+      expect(result.updates).toEqual([
+        {
+          managerId: 'poetry',
+          managerName: 'Poetry (self-managed)',
+          name: 'poetry',
+          currentVersion: '1.8.5',
+          latestVersion: '2.1.1',
+          type: 'poetry-self',
+        },
+      ]);
+
+      fetchSpy.mockRestore();
+    });
+
+    it('runs poetry self update only when updates are selected', async () => {
+      const { PoetryManager } = await import('../src/managers/poetry.js');
+      const manager = new PoetryManager();
+      const executed: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executed.push(`${cmd} ${(args ?? []).join(' ')}`);
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const items = [
+        { managerId: 'poetry', managerName: 'Poetry (self-managed)', name: 'poetry', currentVersion: '1.8.5', latestVersion: '2.1.1', type: 'poetry-self' },
+      ];
+
+      const result = await manager.executeUpdate(items, { dryRun: false });
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(1);
+      expect(executed).toEqual(['poetry self update']);
+
+      const empty = await new PoetryManager().executeUpdate([], { dryRun: false });
+      expect(empty.steps).toHaveLength(0);
+    });
+  });
+
+  describe('CondaManager', () => {
+    it('pairs LINK and UNLINK solver actions and ignores brand-new links', async () => {
+      const { CondaManager } = await import('../src/managers/conda.js');
+      const manager = new CondaManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: `Collecting package metadata...\n${JSON.stringify({
+          actions: {
+            LINK: [
+              { name: 'numpy', version: '2.0.0', channel: 'conda-forge' },
+              { name: 'brand-new-dep', version: '1.0.0' },
+            ],
+            UNLINK: [{ name: 'numpy', version: '1.26.0' }],
+          },
+        })}`,
+        stderr: '',
+        exitCode: 0,
+        success: true,
+        timedOut: false,
+      });
+
+      const result = await manager.checkUpdates();
+
+      expect(result.error).toBeUndefined();
+      expect(result.updates).toEqual([
+        {
+          managerId: 'conda',
+          managerName: 'Conda (Anaconda/Miniforge)',
+          name: 'numpy',
+          currentVersion: '1.26.0',
+          latestVersion: '2.0.0',
+          type: 'conda-pkg',
+          extra: 'conda-forge',
+        },
+      ]);
+    });
+
+    it('runs conda update --all -y when updates are selected', async () => {
+      const { CondaManager } = await import('../src/managers/conda.js');
+      const manager = new CondaManager();
+      const executed: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executed.push(`${cmd} ${(args ?? []).join(' ')}`);
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const items = [
+        { managerId: 'conda', managerName: 'Conda (Anaconda/Miniforge)', name: 'numpy', currentVersion: '1.26.0', latestVersion: '2.0.0', type: 'conda-pkg' },
+      ];
+
+      const result = await manager.executeUpdate(items, { dryRun: false });
+      expect(result.success).toBe(true);
+      expect(executed).toEqual(['conda update --all -y']);
+    });
+  });
+
+  describe('FirmwareManager', () => {
+    const firmwareItem = {
+      managerId: 'firmware',
+      managerName: 'Firmware (fwupd)',
+      name: 'ThinkPad X1 Carbon',
+      currentVersion: '1.0.0',
+      latestVersion: '1.0.5',
+      type: 'firmware',
+    };
+
+    const withNonRootUid = async <T>(fn: () => Promise<T>): Promise<T> => {
+      const originalGetuid = process.getuid;
+      process.getuid = () => 1000;
+      try {
+        return await fn();
+      } finally {
+        process.getuid = originalGetuid;
+      }
+    };
+
+    it('refreshes metadata then parses pending firmware from the JSON payload', async () => {
+      const { FirmwareManager } = await import('../src/managers/firmware.js');
+      const manager = new FirmwareManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      const execSpy = vi.spyOn(execUtils, 'safeExec').mockImplementation(async (_cmd, args) => {
+        if (args?.includes('refresh')) {
+          return { stdout: 'Successfully downloaded new metadata', stderr: '', exitCode: 0, success: true, timedOut: false };
+        }
+        return {
+          stdout: JSON.stringify({
+            Devices: [
+              {
+                Name: 'ThinkPad X1 Carbon',
+                Version: '1.0.0',
+                Vendor: 'Lenovo',
+                Releases: [{ Version: '1.0.5', Name: 'Embedded Controller' }],
+              },
+            ],
+          }),
+          stderr: '',
+          exitCode: 0,
+          success: true,
+          timedOut: false,
+        };
+      });
+
+      const result = await manager.checkUpdates();
+
+      expect(execSpy).toHaveBeenNthCalledWith(1, 'fwupdmgr', ['refresh'], expect.any(Object));
+      expect(execSpy).toHaveBeenNthCalledWith(2, 'fwupdmgr', ['--json', 'get-updates'], expect.any(Object));
+      expect(result.error).toBeUndefined();
+      expect(result.updates).toEqual([
+        {
+          managerId: 'firmware',
+          managerName: 'Firmware (fwupd)',
+          name: 'ThinkPad X1 Carbon',
+          currentVersion: '1.0.0',
+          latestVersion: '1.0.5',
+          type: 'firmware',
+          extra: 'Lenovo',
+        },
+      ]);
+    });
+
+    it('accepts a non-zero exit code when fwupd still returns a JSON payload', async () => {
+      const { FirmwareManager } = await import('../src/managers/firmware.js');
+      const manager = new FirmwareManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: '{"Devices":[]}',
+        stderr: 'No updates available',
+        exitCode: 2,
+        success: false,
+        timedOut: false,
+      });
+
+      const result = await manager.checkUpdates();
+      expect(result.updates).toEqual([]);
+      expect(result.error).toBeUndefined();
+    });
+
+    it('surfaces the daemon error when no JSON payload is produced', async () => {
+      const { FirmwareManager } = await import('../src/managers/firmware.js');
+      const manager = new FirmwareManager();
+      vi.spyOn(manager, 'isAvailable').mockResolvedValue(true);
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: '',
+        stderr: 'Failed to connect to daemon: /run/fwupd/fwupd.sock',
+        exitCode: 1,
+        success: false,
+        timedOut: false,
+      });
+
+      const result = await manager.checkUpdates();
+      expect(result.error).toContain('Failed to connect to daemon');
+    });
+
+    it('fails fast when non-interactive sudo is unavailable', async () => {
+      const { FirmwareManager } = await import('../src/managers/firmware.js');
+      const manager = new FirmwareManager();
+      vi.spyOn(execUtils, 'safeExec').mockResolvedValue({
+        stdout: '',
+        stderr: 'sudo: a password is required',
+        exitCode: 1,
+        success: false,
+        timedOut: false,
+      });
+
+      const result = await withNonRootUid(() => manager.executeUpdate([firmwareItem], { dryRun: false }));
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Firmware updates require sudo privileges');
+      expect(result.steps).toHaveLength(1);
+    });
+
+    it('refreshes metadata and installs pending firmware with sudo', async () => {
+      const { FirmwareManager } = await import('../src/managers/firmware.js');
+      const manager = new FirmwareManager();
+      const executed: string[] = [];
+      vi.spyOn(execUtils, 'safeExec').mockImplementation(async (cmd, args) => {
+        executed.push(`${cmd} ${(args ?? []).join(' ')}`);
+        return { stdout: '', stderr: '', exitCode: 0, success: true, timedOut: false };
+      });
+
+      const result = await withNonRootUid(() => manager.executeUpdate([firmwareItem], { dryRun: false }));
+
+      expect(result.success).toBe(true);
+      expect(result.updatedCount).toBe(1);
+      expect(executed).toEqual([
+        'sudo -n true',
+        'sudo fwupdmgr refresh --force',
+        'sudo fwupdmgr update -y --no-reboot-check --no-unreported-check --no-metadata-check',
+      ]);
+    });
+
+    it('simulates both steps in dry-run mode without executing commands', async () => {
+      const { FirmwareManager } = await import('../src/managers/firmware.js');
+      const manager = new FirmwareManager();
+      const execSpy = vi.spyOn(execUtils, 'safeExec');
+
+      const result = await manager.executeUpdate([firmwareItem], { dryRun: true });
+
+      expect(result.success).toBe(true);
+      expect(result.steps.map((s) => s.name)).toEqual(['sudo fwupdmgr refresh', 'sudo fwupdmgr update']);
+      expect(execSpy).not.toHaveBeenCalled();
+    });
+
+    it('returns success with no steps when nothing is selected', async () => {
+      const { FirmwareManager } = await import('../src/managers/firmware.js');
+      const manager = new FirmwareManager();
+      const execSpy = vi.spyOn(execUtils, 'safeExec');
+
+      const result = await manager.executeUpdate([], { dryRun: false });
+      expect(result.success).toBe(true);
+      expect(result.steps).toHaveLength(0);
+      expect(execSpy).not.toHaveBeenCalled();
+    });
+  });
 });

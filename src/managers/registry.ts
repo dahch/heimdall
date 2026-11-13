@@ -6,11 +6,15 @@ import { BunManager } from './bun.js';
 import { YarnManager } from './yarn.js';
 import { PythonPipManager } from './python.js';
 import { PipxManager } from './pipx.js';
+import { UvManager } from './uv.js';
+import { PoetryManager } from './poetry.js';
+import { CondaManager } from './conda.js';
 import { CargoManager } from './cargo.js';
 import { RubyGemManager } from './gem.js';
 import { MacPortsManager } from './macports.js';
 import { MacAppStoreManager } from './mas.js';
 import { AptManager, DnfManager, FlatpakManager } from './linux.js';
+import { FirmwareManager } from './firmware.js';
 
 export function createDefaultManagers(): PackageManager[] {
   return [
@@ -21,6 +25,9 @@ export function createDefaultManagers(): PackageManager[] {
     new YarnManager(),
     new PythonPipManager(),
     new PipxManager(),
+    new UvManager(),
+    new PoetryManager(),
+    new CondaManager(),
     new CargoManager(),
     new RubyGemManager(),
     new MacPortsManager(),
@@ -28,6 +35,7 @@ export function createDefaultManagers(): PackageManager[] {
     new AptManager(),
     new DnfManager(),
     new FlatpakManager(),
+    new FirmwareManager(),
   ];
 }
 
