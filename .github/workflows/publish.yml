@@ -14,6 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history and tags so `gh release create --notes-from-tag` can read
+          # the annotated tag message instead of falling back to the commit subject.
+          fetch-depth: 0
+          fetch-tags: true
 
       - uses: oven-sh/setup-bun@v2
         with:
