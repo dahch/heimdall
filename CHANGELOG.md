@@ -4,14 +4,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v1.3.0] - 2026-11-13
 
 ### 🚀 Features
-- **python**: add `uv` tools adapter (PyPI lookups, cross-major reinstalls)
-- **python**: add `poetry` self-update adapter
-- **python**: add `conda` adapter driven by the solver dry-run
-- **firmware**: add Linux `fwupd` adapter (`refresh` + `get-updates` + `update`, reboot-safe)
-- **distro**: detect and offer the next distribution release (Fedora via Bodhi, Ubuntu via `do-release-upgrade -c`, Debian via the stable suite)
+- **managers**: add `uv`, Poetry and Conda adapters to complete Python coverage ([`d180a59`]) - Daniel Hernández
+- **managers**: add Linux firmware updates through `fwupd` ([`d180a59`]) - Daniel Hernández
+- **distro**: detect and offer the next distribution release (Fedora via Bodhi, Ubuntu via `do-release-upgrade -c`, Debian via the stable suite) ([`0541f1e`]) - Daniel Hernández
+- **cli**: add `-U, --upgrade-distro` and `--no-distro-upgrade` flags ([`0541f1e`]) - Daniel Hernández
+
+### 🐛 Bug Fixes
+- **npm**: stop reporting the diagnostic `error`/`problems` keys of `npm outdated -g --json` as a package called `error`, and surface the real npm error summary when no update is found ([`efb4b71`]) - Daniel Hernández
+
+### 🛠️ Refactoring & Maintenance
+- **managers**: extract the shared `runStep()` from `BasePackageManager.executeStep()` so the distro stage reuses dry-run emulation, streaming callbacks and sanitized errors ([`0541f1e`]) - Daniel Hernández
+- **package**: add discovery keywords for the new managers, firmware and distro upgrades ([`f581035`]) - Daniel Hernández
+- **ci**: mark the generated GitHub release as latest ([`17d4ec7`]) - Daniel Hernández
 
 ### ⚠️ Behavior Changes
 - New managers are registered by default and can be targeted with `--only uv,poetry,conda,firmware` (or excluded with `--exclude`).
@@ -20,12 +27,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every run now ends with a distribution release check: a newer OS release is reported, and applied only after confirmation (or `--upgrade-distro`). `--yes` reports it but never applies it, and Heimdall never reboots: Fedora stages `dnf system-upgrade` and leaves `sudo dnf system-upgrade reboot` to the user.
 - New flags: `--no-distro-upgrade` (skip the check) and `-U, --upgrade-distro` (apply without asking).
 
-### 🐛 Bug Fixes
-- **npm**: stop reporting the diagnostic `error`/`problems` keys of `npm outdated -g --json` as a package called `error`, and surface the real npm error summary when no update is found.
-
 ### 📝 Documentation
-- README/SPEC/DESIGN/AGENTS: document the four new managers, the firmware and distribution-release stages, the new flags, and ADR-013/014/015.
-- Fix stale source line anchors for `BasePackageManager`, `executeStep`, `DnfManager` and the CLI sudo block.
+- README/SPEC/DESIGN/AGENTS: document the four new managers, the firmware and distribution-release stages, the new flags, and ADR-013/014/015 ([`8a0fff8`]) - Daniel Hernández
+- Fix stale source line anchors for `BasePackageManager`, `executeStep`, `DnfManager` and the CLI sudo block ([`8a0fff8`]) - Daniel Hernández
+
+### 📊 Detailed Diff
+
+```
+ .github/workflows/publish.yml |   7 +-
+ ADR.md                        |  87 ++++++++++
+ AGENTS.md                     |  29 +++-
+ DESIGN.md                     |  36 ++++-
+ README.md                     |  52 +++++-
+ SPEC.md                       |  45 +++++-
+ src/cli.ts                    | 173 +++++++++++++++++++-
+ src/core/distro.ts            | 368 ++++++++++++++++++++++++++++++++++++++++++
+ src/managers/base.ts          |  92 ++++++-----
+ src/managers/conda.ts         | 174 ++++++++++++++++++++
+ src/managers/firmware.ts      | 235 +++++++++++++++++++++++++++
+ src/managers/npm.ts           |  19 ++-
+ src/managers/poetry.ts        | 131 +++++++++++++++
+ src/managers/registry.ts      |   8 +
+ src/managers/uv.ts            | 172 ++++++++++++++++++++
+ tests/distro.test.ts          | 302 ++++++++++++++++++++++++++++++++++
+ tests/managers.test.ts        | 368 ++++++++++++++++++++++++++++++++++++++++++
+ 17 files changed, 2230 insertions(+), 68 deletions(-)
+```
+
+*17 files changed, 2230 insertions(+), 68 deletions(-)*
 
 ## [v1.2.0] - 2026-10-15
 
